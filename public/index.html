@@ -612,8 +612,8 @@
         symbolWrap.style.display = 'none';
       }
 
-      setMetric('rr-value', d.rr_ratio !== null ? d.rr_ratio.toFixed(2) : null);
-      setMetric('entry-value', d.entry !== null ? formatPrice(d.entry) : null);
+      setMetric('rr-value', d.rr_ratio != null ? String(d.rr_ratio) : null);
+      setMetric('entry-value', d.entry != null ? formatPrice(d.entry) : null);
       setLevel('tp2-value', d.tp2);
       setLevel('tp1-value', d.tp1);
       setLevel('entry-level-value', d.entry);
@@ -649,8 +649,9 @@
 
     function formatPrice(n) {
       if (n === null || n === undefined) return '—';
-      // Show up to 5 significant decimal places, trim trailing zeros
-      return parseFloat(n.toPrecision(7)).toString();
+      const num = parseFloat(n);
+      if (isNaN(num)) return String(n);
+      return parseFloat(num.toPrecision(7)).toString();
     }
 
     // ── UI helpers ─────────────────────────────────────────
