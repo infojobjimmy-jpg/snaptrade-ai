@@ -45,6 +45,35 @@ Réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ou après, sans 
   "reasoning": "les 4 étapes ci-dessus condensées en 4-6 phrases"
 }`;
 
+const SCALP_SYSTEM_PROMPT = `Tu es un analyste technique qui lit des screenshots de graphiques de trading en contexte de SCALPING (timeframe M1-M5, horizon de quelques minutes seulement).
+
+Le scalping sur une simple photo statique est intrinsèquement plus incertain qu'une analyse swing — pas de flux live, mouvements rapides, bruit élevé. Sois encore plus conservateur sur la confiance qu'en mode swing.
+
+Avant de conclure, fais ce raisonnement en 4 étapes dans le champ "reasoning" (français québécois, 4-6 phrases courtes):
+1. QUALITÉ/TIMEFRAME: l'échelle de prix est-elle lisible? Le timeframe visible confirme-t-il bien M1-M5? Si le timeframe semble plus haut (M15+), dis-le et baisse la confiance — le mode scalp suppose un timeframe bas.
+2. MOMENTUM IMMÉDIAT: décris uniquement les 3-5 dernières bougies (pas toute la structure) — direction, taille des bougies, mèches.
+3. NIVEAU LE PLUS PROCHE: identifie le support ou résistance le plus proche du prix actuel (pas les zones larges) — c'est ce qui compte pour un scalp.
+4. DÉCLENCHEUR: quel pattern immédiat (cassure de range serré, rejet de mèche, micro-range) justifie une entrée MAINTENANT plutôt que d'attendre.
+
+RÈGLES SPÉCIFIQUES AU SCALP:
+- Les niveaux TP1/TP2/SL doivent être SERRÉS — de l'ordre de quelques points/pips par rapport à l'entry, jamais des zones larges comme en swing.
+- Confiance maximale absolue: 65 (jamais plus, même si tout est aligné — le scalp sur photo statique a un plafond d'incertitude plus élevé qu'en swing).
+- Si le timeframe ne semble pas être M1-M5, mets confiance sous 35 et dis-le clairement dans reasoning.
+- Si le graphique est en range/chop sans direction claire sur les dernières bougies, confiance sous 40.
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ou après, format exact:
+{
+  "symbol_guess": "string ou null",
+  "direction": "buy" ou "sell",
+  "confidence": nombre 0-100,
+  "entry": nombre ou null,
+  "tp1": nombre ou null,
+  "tp2": nombre ou null,
+  "sl": nombre ou null,
+  "rr_ratio": "string ex: 1.5:1" ou null,
+  "reasoning": "les 4 étapes condensées en 4-6 phrases courtes"
+}`;
+
 function extractJSON(text) {
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenceMatch) return JSON.parse(fenceMatch[1].trim());
@@ -83,7 +112,7 @@ app.post('/api/analyze-chart', async (req, res) => {
   const elapsed = () => `${Date.now() - start}ms`;
 
   try {
-    const { image_base64, media_type } = req.body;
+    const { image_base64, media_type, mode } = req.body;
 
     if (!image_base64 || typeof image_base64 !== 'string') {
       return res.status(400).json({ error: 'Champ image_base64 manquant ou invalide.' });
@@ -97,14 +126,17 @@ app.post('/api/analyze-chart', async (req, res) => {
       return res.status(400).json({ error: `Type d'image non supporté. Types acceptés : ${allowed.join(', ')}` });
     }
 
+    const activeMode = mode === 'scalp' ? 'scalp' : 'swing';
+    const systemPrompt = activeMode === 'scalp' ? SCALP_SYSTEM_PROMPT : SYSTEM_PROMPT;
+
     const imageSizeKB = Math.round(image_base64.length * 0.75 / 1024);
-    console.log(`[analyze-chart] Début — image: ${imageSizeKB}KB, modèle: claude-opus-4-8`);
+    console.log(`[analyze-chart] Début — image: ${imageSizeKB}KB, mode: ${activeMode}, modèle: claude-opus-4-8`);
 
     const message = await client.messages.create(
       {
         model: 'claude-opus-4-8',
         max_tokens: 2000,
-        system: SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: [
           {
             role: 'user',
@@ -133,8 +165,8 @@ app.post('/api/analyze-chart', async (req, res) => {
     const parsed = extractJSON(rawText);
     const signal = validateSignal(parsed);
 
-    console.log(`[analyze-chart] OK — direction: ${signal.direction}, confidence: ${signal.confidence}%, total: ${elapsed()}`);
-    return res.json(signal);
+    console.log(`[analyze-chart] OK — mode: ${activeMode}, direction: ${signal.direction}, confidence: ${signal.confidence}%, total: ${elapsed()}`);
+    return res.json({ ...signal, mode: activeMode });
 
   } catch (err) {
     console.error(`[analyze-chart] Erreur après ${elapsed()}:`, err.name, err.message);

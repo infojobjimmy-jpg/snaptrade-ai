@@ -346,6 +346,61 @@
       opacity: .7;
     }
 
+    /* ── Mode toggle ── */
+    .mode-toggle {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+    .mode-btn {
+      flex: 1;
+      padding: 8px 12px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-family: var(--sans);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s, color .15s, border-color .15s;
+      letter-spacing: .3px;
+    }
+    .mode-btn .mode-sub {
+      font-weight: 400;
+      opacity: .7;
+      margin-left: 3px;
+    }
+    .mode-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .mode-btn.active.scalp-active {
+      background: #7B4FF0;
+      border-color: #7B4FF0;
+    }
+    .mode-btn:not(.active):hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    /* ── Mode badge in result ── */
+    .mode-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-top: 6px;
+    }
+    .mode-badge.swing { background: rgba(76,141,255,.15); color: var(--accent); border: 1px solid rgba(76,141,255,.3); }
+    .mode-badge.scalp { background: rgba(123,79,240,.15); color: #A78BFA; border: 1px solid rgba(123,79,240,.3); }
+
     /* Separator */
     .sep {
       width: 100%;
@@ -365,6 +420,16 @@
 
     <!-- Upload card -->
     <div class="card">
+      <!-- Mode toggle -->
+      <div class="mode-toggle" role="group" aria-label="Mode d'analyse">
+        <button class="mode-btn active" id="btn-swing" data-mode="swing">
+          Swing<span class="mode-sub">M15–H1</span>
+        </button>
+        <button class="mode-btn" id="btn-scalp" data-mode="scalp">
+          Scalp<span class="mode-sub">M1–M5</span>
+        </button>
+      </div>
+
       <div id="drop-zone" role="button" tabindex="0" aria-label="Upload trading chart">
         <!-- Empty state -->
         <div id="upload-placeholder">
@@ -405,6 +470,9 @@
           <div class="dir-value" id="dir-value">BUY</div>
           <div id="symbol-wrap" style="margin-top:6px; display:none;">
             <span class="symbol-badge" id="symbol-text"></span>
+          </div>
+          <div id="mode-badge-wrap" style="margin-top:6px;">
+            <span class="mode-badge" id="mode-badge">Swing</span>
           </div>
         </div>
         <div class="confidence-wrap">
@@ -476,6 +544,18 @@
 
     let currentBase64 = null;
     let currentMediaType = null;
+    let currentMode = 'swing';
+
+    // ── Mode toggle ────────────────────────────────────────
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        currentMode = btn.dataset.mode;
+        document.querySelectorAll('.mode-btn').forEach(b => {
+          b.classList.toggle('active', b === btn);
+          b.classList.toggle('scalp-active', b === btn && currentMode === 'scalp');
+        });
+      });
+    });
 
     // ── File handling ──────────────────────────────────────
     function loadFile(file) {
@@ -569,6 +649,7 @@
           body: JSON.stringify({
             image_base64: currentBase64,
             media_type: currentMediaType,
+            mode: currentMode,
           }),
         });
 
@@ -620,6 +701,11 @@
       setLevel('sl-value', d.sl);
 
       document.getElementById('reasoning-text').textContent = d.reasoning || '—';
+
+      const badge = document.getElementById('mode-badge');
+      const isScalp = d.mode === 'scalp';
+      badge.textContent = isScalp ? 'Scalp M1–M5' : 'Swing M15–H1';
+      badge.className = 'mode-badge ' + (isScalp ? 'scalp' : 'swing');
 
       resultPanel.style.display = 'flex';
       resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
