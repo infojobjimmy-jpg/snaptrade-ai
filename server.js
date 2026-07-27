@@ -7,6 +7,9 @@ const Anthropic = require('@anthropic-ai/sdk');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Abort Anthropic at 55s — before Railway's 60s proxy cut
+const ANTHROPIC_TIMEOUT_MS = 55000;
+
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 app.use(express.json({ limit: '20mb' }));
@@ -41,12 +44,10 @@ Réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ou après, sans 
 }`;
 
 function extractJSON(text) {
-  // Strip markdown code fences if present
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenceMatch) {
     return JSON.parse(fenceMatch[1].trim());
   }
-  // Extract first {...} block
   const braceMatch = text.match(/\{[\s\S]*\}/);
   if (braceMatch) {
     return JSON.parse(braceMatch[0]);
@@ -80,6 +81,9 @@ app.get('/health', (_req, res) => {
 });
 
 app.post('/api/analyze-chart', async (req, res) => {
+  const start = Date.now();
+  const elapsed = () => `${Date.now() - start}ms`;
+
   try {
     const { image_base64, media_type } = req.body;
 
@@ -95,53 +99,77 @@ app.post('/api/analyze-chart', async (req, res) => {
       return res.status(400).json({ error: `Unsupported media_type. Allowed: ${allowed.join(', ')}` });
     }
 
-    const message = await client.messages.create({
-      model: 'claude-opus-4-8',
-      max_tokens: 2000,
-      system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: media_type,
-                data: image_base64,
+    console.log(`[analyze-chart] Début appel Anthropic — image: ${Math.round(image_base64.length * 0.75 / 1024)}KB`);
+
+    const message = await client.messages.create(
+      {
+        model: 'claude-opus-4-8',
+        max_tokens: 2000,
+        system: SYSTEM_PROMPT,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: media_type,
+                  data: image_base64,
+                },
               },
-            },
-            {
-              type: 'text',
-              text: 'Analyze this trading chart and return the JSON signal object.',
-            },
-          ],
-        },
-      ],
-    });
+              {
+                type: 'text',
+                text: 'Analyse ce graphique de trading et retourne l\'objet JSON du signal.',
+              },
+            ],
+          },
+        ],
+      },
+      { timeout: ANTHROPIC_TIMEOUT_MS }
+    );
+
+    console.log(`[analyze-chart] Fin appel Anthropic — ${elapsed()}`);
 
     const rawText = message.content[0]?.text ?? '';
     const parsed = extractJSON(rawText);
     const signal = validateSignal(parsed);
 
+    console.log(`[analyze-chart] Succès — direction: ${signal.direction}, confidence: ${signal.confidence}%, total: ${elapsed()}`);
     return res.json(signal);
+
   } catch (err) {
-    console.error('[/api/analyze-chart]', err.message);
+    console.error(`[analyze-chart] Erreur après ${elapsed()}:`, err.message);
+
+    // Guard: never write headers twice (e.g. if timeout already responded)
+    if (res.headersSent) return;
+
+    // Anthropic SDK timeout (AbortError or APITimeoutError)
+    if (err.name === 'APITimeoutError' || err.code === 'ETIMEDOUT' || err.name === 'AbortError') {
+      return res.status(504).json({
+        error: `L'analyse a pris trop de temps (>${ANTHROPIC_TIMEOUT_MS / 1000}s). Réessayez avec une image plus petite, ou patientez un instant.`,
+      });
+    }
 
     if (err.status === 401) {
-      return res.status(500).json({ error: 'Invalid Anthropic API key. Check your ANTHROPIC_API_KEY environment variable.' });
+      return res.status(500).json({ error: 'Clé API Anthropic invalide. Vérifiez la variable ANTHROPIC_API_KEY.' });
     }
     if (err.status === 429) {
-      return res.status(429).json({ error: 'Rate limit reached. Please wait a moment and retry.' });
+      return res.status(429).json({ error: 'Limite de taux Anthropic atteinte. Attendez quelques secondes et réessayez.' });
     }
-    if (err instanceof SyntaxError || err.message.includes('JSON')) {
-      return res.status(502).json({ error: 'Could not parse AI response as valid JSON. Please retry.' });
+    if (err instanceof SyntaxError || err.message?.includes('JSON')) {
+      return res.status(502).json({ error: 'La réponse de l\'IA n\'est pas du JSON valide. Réessayez.' });
     }
 
-    return res.status(500).json({ error: err.message || 'Internal server error.' });
+    return res.status(500).json({ error: err.message || 'Erreur serveur interne.' });
   }
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`SnapTrade AI running on http://localhost:${PORT}`);
 });
+
+// Raise Node socket timeout well above Railway's 60s proxy cut
+server.timeout = 120000;
+server.keepAliveTimeout = 120000;
+server.headersTimeout = 125000;
