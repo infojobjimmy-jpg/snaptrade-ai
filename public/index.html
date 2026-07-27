@@ -385,6 +385,63 @@
       color: var(--text);
     }
 
+    /* ── Symbol override input ── */
+    .symbol-override-wrap {
+      margin-top: 12px;
+    }
+    .symbol-override-label {
+      font-size: 11px;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 5px;
+      letter-spacing: .5px;
+    }
+    .symbol-override-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .symbol-override-input::placeholder { color: var(--muted); font-family: var(--sans); }
+    .symbol-override-input:focus { border-color: var(--accent); }
+
+    /* ── Data source badge ── */
+    .data-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 5px;
+      margin-top: 8px;
+    }
+    .data-badge.real  { background: rgba(31,201,139,.12); color: var(--buy);  border: 1px solid rgba(31,201,139,.25); }
+    .data-badge.vision { background: rgba(255,165,0,.1);  color: #F5A623;     border: 1px solid rgba(255,165,0,.25); }
+    .data-badge .dot  { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    /* ── Indicators mini-grid ── */
+    .indicators-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .ind-cell {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+    .ind-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; }
+    .ind-value { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--text); margin-top: 2px; }
+    .ind-value.null-val { color: var(--muted); }
+
     /* ── Mode badge in result ── */
     .mode-badge {
       display: inline-flex;
@@ -453,6 +510,13 @@
 
       <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" />
 
+      <!-- Optional symbol override -->
+      <div class="symbol-override-wrap">
+        <label class="symbol-override-label" for="symbol-input">Symbole (si non détecté automatiquement)</label>
+        <input class="symbol-override-input" id="symbol-input" type="text"
+               placeholder="ex: XAUUSD, EURUSD, BTC/USD, NDX…" autocomplete="off" spellcheck="false" />
+      </div>
+
       <button id="analyze-btn" disabled>
         <div class="spinner" id="spinner"></div>
         <span id="btn-label">Analyser le graphique</span>
@@ -473,6 +537,11 @@
           </div>
           <div id="mode-badge-wrap" style="margin-top:6px;">
             <span class="mode-badge" id="mode-badge">Swing</span>
+          </div>
+          <div id="data-badge-wrap" style="margin-top:4px;">
+            <span class="data-badge real" id="data-badge">
+              <span class="dot"></span><span id="data-badge-text">Données réelles ✓</span>
+            </span>
           </div>
         </div>
         <div class="confidence-wrap">
@@ -511,6 +580,19 @@
         <div class="level-row">
           <span class="level-tag tag-sl">SL</span>
           <span class="level-price" id="sl-value">—</span>
+        </div>
+      </div>
+
+      <!-- Indicators (shown only when real data available) -->
+      <div class="levels-card" id="indicators-wrap" style="display:none;">
+        <div class="levels-title">Indicateurs marché réels</div>
+        <div class="indicators-grid">
+          <div class="ind-cell"><div class="ind-label">RSI(14)</div><div class="ind-value" id="ind-rsi">—</div></div>
+          <div class="ind-cell"><div class="ind-label">SMA 20</div><div class="ind-value" id="ind-sma20">—</div></div>
+          <div class="ind-cell"><div class="ind-label">SMA 50</div><div class="ind-value" id="ind-sma50">—</div></div>
+          <div class="ind-cell"><div class="ind-label">ATR(14)</div><div class="ind-value" id="ind-atr">—</div></div>
+          <div class="ind-cell"><div class="ind-label">Swing High</div><div class="ind-value" id="ind-sh">—</div></div>
+          <div class="ind-cell"><div class="ind-label">Swing Low</div><div class="ind-value" id="ind-sl">—</div></div>
         </div>
       </div>
 
@@ -647,9 +729,10 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            image_base64: currentBase64,
-            media_type: currentMediaType,
-            mode: currentMode,
+            image_base64:    currentBase64,
+            media_type:      currentMediaType,
+            mode:            currentMode,
+            symbol_override: document.getElementById('symbol-input').value.trim() || undefined,
           }),
         });
 
@@ -702,10 +785,39 @@
 
       document.getElementById('reasoning-text').textContent = d.reasoning || '—';
 
-      const badge = document.getElementById('mode-badge');
-      const isScalp = d.mode === 'scalp';
-      badge.textContent = isScalp ? 'Scalp M1–M5' : 'Swing M15–H1';
-      badge.className = 'mode-badge ' + (isScalp ? 'scalp' : 'swing');
+      // Mode badge
+      const modeBadge = document.getElementById('mode-badge');
+      const isScalp   = d.mode === 'scalp';
+      modeBadge.textContent = isScalp ? 'Scalp M1–M5' : 'Swing M15–H1';
+      modeBadge.className   = 'mode-badge ' + (isScalp ? 'scalp' : 'swing');
+
+      // Data source badge
+      const dataBadge   = document.getElementById('data-badge');
+      const dataBadgeTxt = document.getElementById('data-badge-text');
+      const isRealData  = d.data_source === 'vision_plus_market_data';
+      dataBadge.className  = 'data-badge ' + (isRealData ? 'real' : 'vision');
+      dataBadgeTxt.textContent = isRealData
+        ? 'Basé sur données réelles ✓'
+        : 'Lecture visuelle seulement';
+      dataBadge.title = isRealData
+        ? ''
+        : 'Le symbole n\'a pas pu être confirmé avec des données de marché live. Les niveaux sont estimés visuellement.';
+
+      // Indicators panel
+      const indWrap = document.getElementById('indicators-wrap');
+      if (isRealData && d.indicators) {
+        const ind = d.indicators;
+        const fmtInd = v => v != null ? String(v) : '—';
+        document.getElementById('ind-rsi').textContent   = fmtInd(ind.rsi);
+        document.getElementById('ind-sma20').textContent = fmtInd(ind.sma20);
+        document.getElementById('ind-sma50').textContent = fmtInd(ind.sma50);
+        document.getElementById('ind-atr').textContent   = fmtInd(ind.atr);
+        document.getElementById('ind-sh').textContent    = fmtInd(ind.swingHigh);
+        document.getElementById('ind-sl').textContent    = fmtInd(ind.swingLow);
+        indWrap.style.display = 'block';
+      } else {
+        indWrap.style.display = 'none';
+      }
 
       resultPanel.style.display = 'flex';
       resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
