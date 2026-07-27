@@ -131,6 +131,16 @@ const SYMBOL_MAP = {
   'US100': 'NDX', 'US500': 'SPX',
 };
 
+// Commodity futures → Yahoo Finance tickers (Twelve Data free plan does NOT support these)
+const YAHOO_COMMODITY_MAP = {
+  // Brent crude
+  'XBRUSD': 'BZ=F', 'XBR': 'BZ=F', 'BRENT': 'BZ=F', 'BRENTUSD': 'BZ=F', 'UKOIL': 'BZ=F',
+  // WTI crude
+  'XTIUSD': 'CL=F', 'XTI': 'CL=F', 'WTI': 'CL=F', 'WTIUSD': 'CL=F', 'USOIL': 'CL=F', 'CRUDEOIL': 'CL=F',
+  // Natural gas
+  'XNGUSD': 'NG=F', 'XNG': 'NG=F', 'NATGAS': 'NG=F', 'NATURALGAS': 'NG=F',
+};
+
 function normalizeSymbol(raw) {
   if (!raw) return null;
   const s = raw.trim().toUpperCase().replace(/\s+/g, '');
@@ -144,6 +154,10 @@ function normalizeSymbol(raw) {
 
 function modeToInterval(mode) {
   return mode === 'scalp' ? '5min' : '1h';
+}
+
+function modeToYahooInterval(mode) {
+  return mode === 'scalp' ? '5m' : '1h';
 }
 
 async function fetchMarketData(symbol, interval) {
@@ -160,7 +174,9 @@ async function fetchMarketData(symbol, interval) {
 
   const data = resp.data;
   if (data.status === 'error' || !Array.isArray(data.values) || data.values.length < 15) {
-    console.warn(`[market] Twelve Data error for ${normalized}:`, data.message || 'no values');
+    const msg = data.message || 'no values';
+    const planLimit = msg.toLowerCase().includes('grow') || msg.toLowerCase().includes('venture') || msg.toLowerCase().includes('plan');
+    console.warn(`[market] Twelve Data ${planLimit ? '(PLAN LIMIT — upgrade required)' : 'error'} for ${normalized}: ${msg}`);
     return null;
   }
 
@@ -174,6 +190,55 @@ async function fetchMarketData(symbol, interval) {
   }));
 
   return { symbol: normalized, interval, candles };
+}
+
+async function fetchYahooFinance(yahooTicker, yahooInterval) {
+  const range = '5d'; // 5 days covers 60+ hourly or 390+ 5-min bars
+  const resp = await axios.get(
+    'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(yahooTicker),
+    {
+      params: { interval: yahooInterval, range },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json',
+      },
+      timeout: 8000,
+    }
+  );
+
+  const result = resp.data?.chart?.result?.[0];
+  if (!result) {
+    console.warn(`[market] Yahoo Finance: no result for ${yahooTicker}`);
+    return null;
+  }
+
+  const timestamps = result.timestamp;
+  const quote = result.indicators?.quote?.[0];
+  if (!timestamps || !quote?.close) {
+    console.warn(`[market] Yahoo Finance: incomplete OHLC for ${yahooTicker}`);
+    return null;
+  }
+
+  const candles = [];
+  for (let i = 0; i < timestamps.length; i++) {
+    const close = quote.close[i];
+    if (close == null) continue;
+    candles.push({
+      open:  quote.open[i]  ?? close,
+      high:  quote.high[i]  ?? close,
+      low:   quote.low[i]   ?? close,
+      close,
+      dt: new Date(timestamps[i] * 1000).toISOString(),
+    });
+  }
+
+  if (candles.length < 15) {
+    console.warn(`[market] Yahoo Finance: only ${candles.length} candles for ${yahooTicker} — need 15+`);
+    return null;
+  }
+
+  // Yahoo Finance already returns chronological order (oldest first)
+  return { symbol: yahooTicker, interval: yahooInterval, candles };
 }
 
 function calculateIndicators(candles) {
@@ -333,21 +398,42 @@ app.post('/api/analyze-chart', async (req, res) => {
     let marketSym   = null;
     let finalSignal = pass1Signal;
 
-    const symbolToUse = symbol_override?.trim() || pass1Signal.symbol_guess;
+    const rawSymbol   = ((symbol_override?.trim() || pass1Signal.symbol_guess) ?? '').toUpperCase().replace(/\s+/g, '');
+    const yahooTicker = rawSymbol ? YAHOO_COMMODITY_MAP[rawSymbol] : null;
+    const hasTwelve   = !!process.env.TWELVE_DATA_API_KEY;
 
-    if (symbolToUse && process.env.TWELVE_DATA_API_KEY && remaining() > 12000) {
+    if (!rawSymbol) {
+      console.log('[analyze] No symbol detected — vision_only');
+    } else if (remaining() <= 12000) {
+      console.warn(`[analyze] Insufficient time (${remaining()}ms) for market data — vision_only`);
+    } else if (!yahooTicker && !hasTwelve) {
+      console.log(`[analyze] No market data key configured — vision_only`);
+    } else {
       try {
-        const interval   = modeToInterval(activeMode);
-        const marketData = await fetchMarketData(symbolToUse, interval);
+        let marketData  = null;
+        let fetchInterval;
 
-        if (marketData) {
+        if (yahooTicker) {
+          fetchInterval = modeToYahooInterval(activeMode);
+          console.log(`[analyze] Commodity detected: ${rawSymbol} → Yahoo Finance ${yahooTicker} (${fetchInterval})`);
+          marketData = await fetchYahooFinance(yahooTicker, fetchInterval);
+        } else {
+          fetchInterval = modeToInterval(activeMode);
+          const normalized = normalizeSymbol(rawSymbol);
+          console.log(`[analyze] Fetching Twelve Data: ${rawSymbol} → ${normalized} (${fetchInterval})`);
+          marketData = await fetchMarketData(rawSymbol, fetchInterval);
+        }
+
+        if (!marketData) {
+          console.warn(`[analyze] No market data returned for ${rawSymbol} — vision_only`);
+        } else {
           indicators = calculateIndicators(marketData.candles);
           marketSym  = marketData.symbol;
-          console.log(`[analyze] Market data OK — ${marketSym} ${interval}, price=${indicators.currentPrice}, RSI=${indicators.rsi}, ATR=${indicators.atr}`);
+          console.log(`[analyze] Market data OK — ${marketSym} (${fetchInterval}), price=${indicators.currentPrice}, RSI=${indicators.rsi}, ATR=${indicators.atr}`);
 
           // ── Pass 2: Finalize with real data ─────────────────
           if (remaining() > 8000) {
-            const dataText = buildMarketDataText(marketSym, interval, indicators, pass1Signal.direction);
+            const dataText = buildMarketDataText(marketSym, fetchInterval, indicators, pass1Signal.direction);
             const pass2Msg = await client.messages.create(
               {
                 model: 'claude-opus-4-8',
@@ -361,7 +447,7 @@ app.post('/api/analyze-chart', async (req, res) => {
             dataSource  = 'vision_plus_market_data';
             console.log(`[analyze] Pass2 done — ${elapsed()} — entry=${finalSignal.entry}, sl=${finalSignal.sl}, tp1=${finalSignal.tp1}`);
           } else {
-            console.warn(`[analyze] Not enough time for pass2 (${remaining()}ms left) — returning vision_only`);
+            console.warn(`[analyze] Not enough time for pass2 (${remaining()}ms left) — vision_only`);
           }
         }
       } catch (mktErr) {
