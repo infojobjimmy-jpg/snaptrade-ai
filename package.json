@@ -1,0 +1,16 @@
+{
+  "name": "snaptrade-ai",
+  "version": "1.0.0",
+  "description": "AI-powered trading chart analysis platform",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "@anthropic-ai/sdk": "^0.30.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

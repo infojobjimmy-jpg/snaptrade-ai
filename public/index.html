@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SnapTrade AI — Chart Signal Analyzer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0B0E11;
+      --surface:   #151A21;
+      --surface2:  #1C2330;
+      --border:    #232D3B;
+      --accent:    #4C8DFF;
+      --buy:       #1FC98B;
+      --sell:      #E5484D;
+      --text:      #E8ECF0;
+      --muted:     #6B7A8D;
+      --mono:      'JetBrains Mono', 'Courier New', monospace;
+      --sans:      'Inter', sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── Layout ── */
+    .app {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px 64px;
+    }
+
+    /* ── Header ── */
+    header {
+      width: 100%;
+      max-width: 680px;
+      margin-bottom: 32px;
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    .logo {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      color: var(--text);
+    }
+    .logo span { color: var(--accent); }
+    .tagline {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 400;
+    }
+
+    /* ── Card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+      width: 100%;
+      max-width: 680px;
+    }
+
+    /* ── Upload zone ── */
+    #drop-zone {
+      border: 1.5px dashed var(--border);
+      border-radius: 8px;
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+    }
+    #drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(76, 141, 255, 0.05);
+    }
+    #drop-zone.has-image { padding: 0; border-style: solid; border-color: var(--border); }
+
+    .upload-icon {
+      width: 40px;
+      height: 40px;
+      margin: 0 auto 12px;
+      opacity: .4;
+    }
+    .upload-label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .upload-label strong { color: var(--accent); cursor: pointer; }
+    .upload-hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    #file-input { display: none; }
+
+    /* Preview */
+    #preview-wrap {
+      display: none;
+      position: relative;
+    }
+    #preview-img {
+      width: 100%;
+      border-radius: 6px;
+      display: block;
+      max-height: 420px;
+      object-fit: contain;
+      background: var(--bg);
+    }
+    #remove-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: rgba(11,14,17,.85);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color .15s, border-color .15s;
+      backdrop-filter: blur(4px);
+    }
+    #remove-btn:hover { color: var(--sell); border-color: var(--sell); }
+
+    /* ── Analyze button ── */
+    #analyze-btn {
+      margin-top: 16px;
+      width: 100%;
+      padding: 12px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: opacity .2s, transform .1s;
+    }
+    #analyze-btn:hover:not(:disabled) { opacity: .88; }
+    #analyze-btn:active:not(:disabled) { transform: scale(.99); }
+    #analyze-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+    /* Spinner */
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      display: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Error banner ── */
+    #error-box {
+      display: none;
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: rgba(229, 72, 77, .1);
+      border: 1px solid rgba(229, 72, 77, .35);
+      border-radius: 8px;
+      color: #f08083;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    /* ── Result panel ── */
+    #result-panel {
+      display: none;
+      margin-top: 20px;
+      width: 100%;
+      max-width: 680px;
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* Direction card */
+    #dir-card {
+      border-radius: 10px;
+      padding: 20px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    #dir-card.buy  { background: rgba(31,201,139,.12); border: 1px solid rgba(31,201,139,.3); }
+    #dir-card.sell { background: rgba(229,72,77,.12);  border: 1px solid rgba(229,72,77,.3); }
+
+    .dir-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      opacity: .7;
+    }
+    .dir-value {
+      font-size: 32px;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: -0.5px;
+    }
+    #dir-card.buy  .dir-value { color: var(--buy); }
+    #dir-card.sell .dir-value { color: var(--sell); }
+
+    .confidence-wrap { text-align: right; }
+    .conf-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+    .conf-value {
+      font-family: var(--mono);
+      font-size: 28px;
+      font-weight: 600;
+    }
+    #dir-card.buy  .conf-value { color: var(--buy); }
+    #dir-card.sell .conf-value { color: var(--sell); }
+
+    /* Metrics grid */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .metric-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .metric-label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+    }
+    .metric-value {
+      font-family: var(--mono);
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .metric-value.null-val { color: var(--muted); font-size: 18px; }
+
+    /* Price levels */
+    .levels-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .levels-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 12px;
+    }
+    .level-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .level-row:last-child { border-bottom: none; }
+    .level-tag {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .8px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      min-width: 44px;
+      text-align: center;
+    }
+    .tag-tp2  { background: rgba(31,201,139,.15); color: var(--buy); }
+    .tag-tp1  { background: rgba(31,201,139,.08); color: var(--buy); opacity: .8; }
+    .tag-entry { background: rgba(76,141,255,.12); color: var(--accent); }
+    .tag-sl   { background: rgba(229,72,77,.12); color: var(--sell); }
+    .level-price {
+      font-family: var(--mono);
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .level-price.null-val { color: var(--muted); font-size: 14px; }
+
+    /* Reasoning */
+    .reasoning-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .reasoning-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+    #reasoning-text {
+      font-size: 13px;
+      color: #B8C4D0;
+      line-height: 1.65;
+    }
+
+    /* Symbol badge */
+    .symbol-badge {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 8px;
+    }
+
+    /* Disclaimer */
+    .disclaimer {
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+      padding: 0 8px;
+      line-height: 1.5;
+      opacity: .7;
+    }
+
+    /* Separator */
+    .sep {
+      width: 100%;
+      max-width: 680px;
+      height: 1px;
+      background: var(--border);
+      margin: 4px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="logo">Snap<span>Trade</span> AI</div>
+      <div class="tagline">Chart Signal Analyzer</div>
+    </header>
+
+    <!-- Upload card -->
+    <div class="card">
+      <div id="drop-zone" role="button" tabindex="0" aria-label="Upload trading chart">
+        <!-- Empty state -->
+        <div id="upload-placeholder">
+          <svg class="upload-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="40" height="40" rx="8" fill="#232D3B"/>
+            <path d="M20 12v12M14 18l6-6 6 6" stroke="#6B7A8D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M12 28h16" stroke="#6B7A8D" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <p class="upload-label">
+            Drop your chart here or <strong id="browse-trigger">browse</strong>
+          </p>
+          <p class="upload-hint">PNG, JPG, WebP — max 15 MB</p>
+        </div>
+
+        <!-- Preview state -->
+        <div id="preview-wrap">
+          <img id="preview-img" alt="Chart preview" />
+          <button id="remove-btn" title="Remove image" aria-label="Remove image">✕</button>
+        </div>
+      </div>
+
+      <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" />
+
+      <button id="analyze-btn" disabled>
+        <div class="spinner" id="spinner"></div>
+        <span id="btn-label">Analyser le graphique</span>
+      </button>
+
+      <div id="error-box" role="alert"></div>
+    </div>
+
+    <!-- Results (hidden until analysis) -->
+    <div id="result-panel">
+      <!-- Direction + confidence -->
+      <div id="dir-card">
+        <div>
+          <div class="dir-label">Signal</div>
+          <div class="dir-value" id="dir-value">BUY</div>
+          <div id="symbol-wrap" style="margin-top:6px; display:none;">
+            <span class="symbol-badge" id="symbol-text"></span>
+          </div>
+        </div>
+        <div class="confidence-wrap">
+          <div class="conf-label">Confidence</div>
+          <div class="conf-value" id="conf-value">—</div>
+        </div>
+      </div>
+
+      <!-- RR + Entry grid -->
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-label">R:R Ratio</div>
+          <div class="metric-value" id="rr-value">—</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Entry Price</div>
+          <div class="metric-value" id="entry-value">—</div>
+        </div>
+      </div>
+
+      <!-- Price levels -->
+      <div class="levels-card">
+        <div class="levels-title">Price Levels</div>
+        <div class="level-row">
+          <span class="level-tag tag-tp2">TP2</span>
+          <span class="level-price" id="tp2-value">—</span>
+        </div>
+        <div class="level-row">
+          <span class="level-tag tag-tp1">TP1</span>
+          <span class="level-price" id="tp1-value">—</span>
+        </div>
+        <div class="level-row">
+          <span class="level-tag tag-entry">ENTRY</span>
+          <span class="level-price" id="entry-level-value">—</span>
+        </div>
+        <div class="level-row">
+          <span class="level-tag tag-sl">SL</span>
+          <span class="level-price" id="sl-value">—</span>
+        </div>
+      </div>
+
+      <!-- Reasoning -->
+      <div class="reasoning-card">
+        <div class="reasoning-title">Rationale</div>
+        <p id="reasoning-text"></p>
+      </div>
+
+      <div class="sep"></div>
+      <p class="disclaimer">
+        Ce signal est fourni à titre informatif uniquement et ne constitue pas un conseil en investissement.
+        Le trading comporte des risques de perte en capital. Consultez un conseiller financier agréé.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    const dropZone      = document.getElementById('drop-zone');
+    const fileInput     = document.getElementById('file-input');
+    const browseTrigger = document.getElementById('browse-trigger');
+    const placeholder   = document.getElementById('upload-placeholder');
+    const previewWrap   = document.getElementById('preview-wrap');
+    const previewImg    = document.getElementById('preview-img');
+    const removeBtn     = document.getElementById('remove-btn');
+    const analyzeBtn    = document.getElementById('analyze-btn');
+    const btnLabel      = document.getElementById('btn-label');
+    const spinner       = document.getElementById('spinner');
+    const errorBox      = document.getElementById('error-box');
+    const resultPanel   = document.getElementById('result-panel');
+
+    let currentBase64 = null;
+    let currentMediaType = null;
+
+    // ── File handling ──────────────────────────────────────
+    function loadFile(file) {
+      if (!file || !file.type.startsWith('image/')) {
+        showError('Fichier invalide. Veuillez sélectionner une image (PNG, JPG, WebP).');
+        return;
+      }
+      if (file.size > 15 * 1024 * 1024) {
+        showError('Image trop volumineuse. Maximum 15 MB.');
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataURL = e.target.result;
+        // Extract base64 (strip "data:image/...;base64,")
+        const comma = dataURL.indexOf(',');
+        currentBase64 = dataURL.substring(comma + 1);
+        currentMediaType = file.type;
+
+        previewImg.src = dataURL;
+        placeholder.style.display = 'none';
+        previewWrap.style.display = 'block';
+        dropZone.classList.add('has-image');
+        analyzeBtn.disabled = false;
+        hideError();
+        resultPanel.style.display = 'none';
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function clearImage() {
+      currentBase64 = null;
+      currentMediaType = null;
+      previewImg.src = '';
+      placeholder.style.display = 'block';
+      previewWrap.style.display = 'none';
+      dropZone.classList.remove('has-image');
+      analyzeBtn.disabled = true;
+      fileInput.value = '';
+      hideError();
+      resultPanel.style.display = 'none';
+    }
+
+    // Drag & drop
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file) loadFile(file);
+    });
+
+    // Click to upload (only when no image)
+    dropZone.addEventListener('click', (e) => {
+      if (currentBase64) return; // prevent click-through on preview
+      fileInput.click();
+    });
+
+    browseTrigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      fileInput.click();
+    });
+
+    dropZone.addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && !currentBase64) fileInput.click();
+    });
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files[0]) loadFile(fileInput.files[0]);
+    });
+
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearImage();
+    });
+
+    // ── API call ───────────────────────────────────────────
+    analyzeBtn.addEventListener('click', async () => {
+      if (!currentBase64) return;
+
+      setLoading(true);
+      hideError();
+      resultPanel.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/analyze-chart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_base64: currentBase64,
+            media_type: currentMediaType,
+          }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          showError(data.error || `Erreur serveur (${res.status})`);
+          return;
+        }
+
+        renderResult(data);
+      } catch (err) {
+        showError('Impossible de contacter le serveur. Vérifiez votre connexion.');
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    // ── Render result ──────────────────────────────────────
+    function renderResult(d) {
+      const isBuy = d.direction === 'buy';
+      const dirCard = document.getElementById('dir-card');
+      dirCard.className = isBuy ? 'buy' : 'sell';
+
+      document.getElementById('dir-value').textContent = d.direction.toUpperCase();
+      document.getElementById('conf-value').textContent = d.confidence + '%';
+
+      const symbolWrap = document.getElementById('symbol-wrap');
+      if (d.symbol_guess) {
+        document.getElementById('symbol-text').textContent = d.symbol_guess;
+        symbolWrap.style.display = 'block';
+      } else {
+        symbolWrap.style.display = 'none';
+      }
+
+      setMetric('rr-value', d.rr_ratio !== null ? d.rr_ratio.toFixed(2) : null);
+      setMetric('entry-value', d.entry !== null ? formatPrice(d.entry) : null);
+      setLevel('tp2-value', d.tp2);
+      setLevel('tp1-value', d.tp1);
+      setLevel('entry-level-value', d.entry);
+      setLevel('sl-value', d.sl);
+
+      document.getElementById('reasoning-text').textContent = d.reasoning || '—';
+
+      resultPanel.style.display = 'flex';
+      resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function setMetric(id, val) {
+      const el = document.getElementById(id);
+      if (val === null || val === undefined) {
+        el.textContent = '—';
+        el.classList.add('null-val');
+      } else {
+        el.textContent = val;
+        el.classList.remove('null-val');
+      }
+    }
+
+    function setLevel(id, val) {
+      const el = document.getElementById(id);
+      if (val === null || val === undefined) {
+        el.textContent = '—';
+        el.classList.add('null-val');
+      } else {
+        el.textContent = formatPrice(val);
+        el.classList.remove('null-val');
+      }
+    }
+
+    function formatPrice(n) {
+      if (n === null || n === undefined) return '—';
+      // Show up to 5 significant decimal places, trim trailing zeros
+      return parseFloat(n.toPrecision(7)).toString();
+    }
+
+    // ── UI helpers ─────────────────────────────────────────
+    function setLoading(on) {
+      analyzeBtn.disabled = on;
+      spinner.style.display = on ? 'block' : 'none';
+      btnLabel.textContent = on ? 'Analyse en cours…' : 'Analyser le graphique';
+    }
+
+    function showError(msg) {
+      errorBox.textContent = msg;
+      errorBox.style.display = 'block';
+    }
+
+    function hideError() {
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
+    }
+  </script>
+</body>
+</html>
