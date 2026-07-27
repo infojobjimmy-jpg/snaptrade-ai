@@ -483,8 +483,8 @@
         showError('Fichier invalide. Veuillez sélectionner une image (PNG, JPG, WebP).');
         return;
       }
-      if (file.size > 15 * 1024 * 1024) {
-        showError('Image trop volumineuse. Maximum 15 MB.');
+      if (file.size > 25 * 1024 * 1024) {
+        showError('Image trop volumineuse. Maximum 25 MB.');
         return;
       }
 
@@ -572,16 +572,24 @@
           }),
         });
 
-        const data = await res.json();
+        // Parse JSON first — if body is not JSON (e.g. upstream error), catch it explicitly
+        let data;
+        try {
+          data = await res.json();
+        } catch (parseErr) {
+          showError(`Le serveur a répondu avec un format inattendu (HTTP ${res.status}). Réessayez.`);
+          return;
+        }
 
         if (!res.ok) {
-          showError(data.error || `Erreur serveur (${res.status})`);
+          showError(data.error || `Erreur serveur (${res.status}). Réessayez.`);
           return;
         }
 
         renderResult(data);
-      } catch (err) {
-        showError('Impossible de contacter le serveur. Vérifiez votre connexion.');
+      } catch (networkErr) {
+        console.error('[SnapTrade fetch error]', networkErr);
+        showError(`Erreur réseau : ${networkErr.message || 'connexion interrompue'}. Vérifiez votre connexion et réessayez.`);
       } finally {
         setLoading(false);
       }

@@ -7,12 +7,14 @@ const Anthropic = require('@anthropic-ai/sdk');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Abort Anthropic at 55s — before Railway's 60s proxy cut
-const ANTHROPIC_TIMEOUT_MS = 55000;
+// Abort Anthropic at 50s — well before Railway's 60s proxy cut.
+// maxRetries: 0 is CRITICAL: default SDK retries (2) would make the real timeout 150s.
+const ANTHROPIC_TIMEOUT_MS = 50000;
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-app.use(express.json({ limit: '20mb' }));
+// 50mb covers a 35MB image (base64 overhead ~1.37x + JSON wrapper)
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 const SYSTEM_PROMPT = `Tu es un analyste technique senior qui lit des screenshots de graphiques de trading (forex, crypto, indices, actions).
@@ -45,13 +47,9 @@ Réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ou après, sans 
 
 function extractJSON(text) {
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    return JSON.parse(fenceMatch[1].trim());
-  }
+  if (fenceMatch) return JSON.parse(fenceMatch[1].trim());
   const braceMatch = text.match(/\{[\s\S]*\}/);
-  if (braceMatch) {
-    return JSON.parse(braceMatch[0]);
-  }
+  if (braceMatch) return JSON.parse(braceMatch[0]);
   throw new Error('No valid JSON object found in Claude response');
 }
 
@@ -88,18 +86,19 @@ app.post('/api/analyze-chart', async (req, res) => {
     const { image_base64, media_type } = req.body;
 
     if (!image_base64 || typeof image_base64 !== 'string') {
-      return res.status(400).json({ error: 'Missing or invalid image_base64 field.' });
+      return res.status(400).json({ error: 'Champ image_base64 manquant ou invalide.' });
     }
     if (!media_type || typeof media_type !== 'string') {
-      return res.status(400).json({ error: 'Missing or invalid media_type field.' });
+      return res.status(400).json({ error: 'Champ media_type manquant ou invalide.' });
     }
 
     const allowed = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
     if (!allowed.includes(media_type)) {
-      return res.status(400).json({ error: `Unsupported media_type. Allowed: ${allowed.join(', ')}` });
+      return res.status(400).json({ error: `Type d'image non supporté. Types acceptés : ${allowed.join(', ')}` });
     }
 
-    console.log(`[analyze-chart] Début appel Anthropic — image: ${Math.round(image_base64.length * 0.75 / 1024)}KB`);
+    const imageSizeKB = Math.round(image_base64.length * 0.75 / 1024);
+    console.log(`[analyze-chart] Début — image: ${imageSizeKB}KB, modèle: claude-opus-4-8`);
 
     const message = await client.messages.create(
       {
@@ -112,11 +111,7 @@ app.post('/api/analyze-chart', async (req, res) => {
             content: [
               {
                 type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: media_type,
-                  data: image_base64,
-                },
+                source: { type: 'base64', media_type, data: image_base64 },
               },
               {
                 type: 'text',
@@ -126,7 +121,10 @@ app.post('/api/analyze-chart', async (req, res) => {
           },
         ],
       },
-      { timeout: ANTHROPIC_TIMEOUT_MS }
+      {
+        timeout: ANTHROPIC_TIMEOUT_MS,
+        maxRetries: 0, // CRITICAL: default 2 retries would make real timeout 150s
+      }
     );
 
     console.log(`[analyze-chart] Fin appel Anthropic — ${elapsed()}`);
@@ -135,27 +133,27 @@ app.post('/api/analyze-chart', async (req, res) => {
     const parsed = extractJSON(rawText);
     const signal = validateSignal(parsed);
 
-    console.log(`[analyze-chart] Succès — direction: ${signal.direction}, confidence: ${signal.confidence}%, total: ${elapsed()}`);
+    console.log(`[analyze-chart] OK — direction: ${signal.direction}, confidence: ${signal.confidence}%, total: ${elapsed()}`);
     return res.json(signal);
 
   } catch (err) {
-    console.error(`[analyze-chart] Erreur après ${elapsed()}:`, err.message);
+    console.error(`[analyze-chart] Erreur après ${elapsed()}:`, err.name, err.message);
 
-    // Guard: never write headers twice (e.g. if timeout already responded)
     if (res.headersSent) return;
 
-    // Anthropic SDK timeout (AbortError or APITimeoutError)
     if (err.name === 'APITimeoutError' || err.code === 'ETIMEDOUT' || err.name === 'AbortError') {
       return res.status(504).json({
-        error: `L'analyse a pris trop de temps (>${ANTHROPIC_TIMEOUT_MS / 1000}s). Réessayez avec une image plus petite, ou patientez un instant.`,
+        error: `L'analyse a pris trop de temps (>${ANTHROPIC_TIMEOUT_MS / 1000}s). Essayez avec une image plus petite ou réessayez dans un instant.`,
       });
     }
-
+    if (err.status === 400 && err.message?.toLowerCase().includes('image')) {
+      return res.status(400).json({ error: `Image rejetée par l'IA : ${err.message}` });
+    }
     if (err.status === 401) {
-      return res.status(500).json({ error: 'Clé API Anthropic invalide. Vérifiez la variable ANTHROPIC_API_KEY.' });
+      return res.status(500).json({ error: 'Clé API Anthropic invalide.' });
     }
     if (err.status === 429) {
-      return res.status(429).json({ error: 'Limite de taux Anthropic atteinte. Attendez quelques secondes et réessayez.' });
+      return res.status(429).json({ error: 'Limite de débit Anthropic atteinte. Attendez quelques secondes.' });
     }
     if (err instanceof SyntaxError || err.message?.includes('JSON')) {
       return res.status(502).json({ error: 'La réponse de l\'IA n\'est pas du JSON valide. Réessayez.' });
@@ -165,11 +163,22 @@ app.post('/api/analyze-chart', async (req, res) => {
   }
 });
 
+// Global error handler — catches body-parser errors (413, malformed JSON, etc.)
+// Without this, Express returns text/plain which breaks res.json() in the browser.
+app.use((err, req, res, _next) => {
+  console.error('[Express Error]', err.status || 500, err.type, err.message);
+  if (res.headersSent) return;
+  const status = err.status || err.statusCode || 500;
+  const message = status === 413
+    ? 'Image trop volumineuse pour le serveur. Compressez l\'image avant de l\'envoyer (max ~35MB).'
+    : (err.message || 'Erreur serveur.');
+  res.status(status).json({ error: message });
+});
+
 const server = app.listen(PORT, () => {
   console.log(`SnapTrade AI running on http://localhost:${PORT}`);
 });
 
-// Raise Node socket timeout well above Railway's 60s proxy cut
 server.timeout = 120000;
 server.keepAliveTimeout = 120000;
 server.headersTimeout = 125000;
