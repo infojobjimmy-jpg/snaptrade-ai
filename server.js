@@ -320,6 +320,57 @@ function buildMarketDataText(symbol, interval, ind, firstDirection) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Position sizing
+// ─────────────────────────────────────────────────────────────
+
+function getContractInfo(symbol) {
+  if (!symbol) return { contractSize: 100000, type: 'forex' };
+  const s = symbol.toUpperCase().replace(/[\s/=\-]/g, '');
+  // Gold (XAU/USD, GC=F)
+  if (/XAU|GCF|^GOLD$/.test(s))  return { contractSize: 100,    type: 'gold (100 oz/lot)' };
+  // Silver (XAG/USD, SI=F)
+  if (/XAG|SIF|^SILVER$/.test(s)) return { contractSize: 5000,   type: 'silver (5000 oz/lot)' };
+  // Oil & natural gas (Yahoo: BZ=F→BZF, CL=F→CLF, NG=F→NGF; MT5: XBR, XTI, XNG)
+  if (/^(BZF|CLF|NGF)$|XBR|XTI|XNG|BRENT|WTI|UKOIL|USOIL|NATGAS|CRUDE/.test(s))
+    return { contractSize: 1000, type: 'oil/gas (1000 barrels/lot)' };
+  // Crypto (no standard lot — 1 unit per lot)
+  if (/^(BTC|ETH|SOL|XRP|ADA|DOT|LINK|AVAX|DOGE|MATIC|UNI|LTC|BCH|ATOM)/.test(s))
+    return { contractSize: 1, type: 'crypto (1 unit/lot)' };
+  // Indices ($1/point generic — varies greatly by broker)
+  if (/NDX|SPX|DJI|DAX|FTSE|NAS100|US30|US500|US100|CAC40|NIKKEI|VIX/.test(s))
+    return { contractSize: 1, type: 'index ($1/point estimate)' };
+  // Default: forex (EUR/USD, GBP/USD, etc.)
+  return { contractSize: 100000, type: 'forex (100k units/lot)' };
+}
+
+function calculateLotSize(accountBalance, riskPercent, entry, sl, symbol) {
+  const balance  = parseFloat(accountBalance);
+  const risk     = parseFloat(riskPercent);
+  const entryNum = parseFloat(entry);
+  const slNum    = parseFloat(sl);
+
+  if (!isFinite(balance) || balance <= 0)           return null;
+  if (!isFinite(risk)    || risk <= 0 || risk > 100) return null;
+  if (!isFinite(entryNum) || !isFinite(slNum))       return null;
+
+  const slDistance = Math.abs(entryNum - slNum);
+  if (slDistance === 0) return null;
+
+  const { contractSize, type } = getContractInfo(symbol);
+  const riskAmount  = balance * (risk / 100);
+  const rawLotSize  = riskAmount / (slDistance * contractSize);
+  const lotSize     = Math.max(0.01, Math.round(rawLotSize * 100) / 100);
+
+  console.log(`[sizing] symbol=${symbol} → ${type} | contractSize=${contractSize} | slDist=${slDistance} | riskAmt=${riskAmount.toFixed(2)} → ${lotSize} lots`);
+
+  return {
+    lot_size:          lotSize,
+    risk_amount:       parseFloat(riskAmount.toFixed(2)),
+    lot_size_is_estimate: true,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
 // JSON helpers
 // ─────────────────────────────────────────────────────────────
 
@@ -361,7 +412,7 @@ app.post('/api/analyze-chart', async (req, res) => {
   const remaining    = () => HANDLER_BUDGET_MS - (Date.now() - handlerStart);
 
   try {
-    const { image_base64, media_type, mode, symbol_override } = req.body;
+    const { image_base64, media_type, mode, symbol_override, account_balance, risk_percent } = req.body;
 
     if (!image_base64 || typeof image_base64 !== 'string')
       return res.status(400).json({ error: 'Champ image_base64 manquant ou invalide.' });
@@ -456,12 +507,19 @@ app.post('/api/analyze-chart', async (req, res) => {
       }
     }
 
+    // ── Position sizing ──────────────────────────────────────
+    const bestSymbol = finalSignal.symbol_guess || marketSym || rawSymbol || null;
+    const sizing = calculateLotSize(account_balance, risk_percent, finalSignal.entry, finalSignal.sl, bestSymbol);
+
     console.log(`[analyze] DONE — ${elapsed()}, data_source=${dataSource}`);
     return res.json({
       ...finalSignal,
-      mode:        activeMode,
-      data_source: dataSource,
-      indicators:  indicators,
+      mode:               activeMode,
+      data_source:        dataSource,
+      indicators:         indicators,
+      lot_size:           sizing ? sizing.lot_size          : null,
+      risk_amount:        sizing ? sizing.risk_amount        : null,
+      lot_size_is_estimate: sizing ? sizing.lot_size_is_estimate : null,
     });
 
   } catch (err) {

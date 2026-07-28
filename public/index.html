@@ -466,6 +466,78 @@
       background: var(--border);
       margin: 4px 0;
     }
+
+    /* ── Position sizing inputs ── */
+    .sizing-inputs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .sizing-field label {
+      font-size: 11px;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 5px;
+      letter-spacing: .5px;
+    }
+    .sizing-field input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .sizing-field input::placeholder { color: var(--muted); font-family: var(--sans); }
+    .sizing-field input:focus { border-color: var(--accent); }
+    .sizing-field input::-webkit-outer-spin-button,
+    .sizing-field input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .sizing-field input[type=number] { -moz-appearance: textfield; }
+
+    /* ── Position sizing result card ── */
+    .sizing-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .sizing-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 12px;
+    }
+    .sizing-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .sizing-row:last-of-type { border-bottom: none; }
+    .sizing-label { font-size: 12px; color: var(--muted); }
+    .sizing-value {
+      font-family: var(--mono);
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .sizing-warning {
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: rgba(245, 166, 35, .08);
+      border: 1px solid rgba(245, 166, 35, .22);
+      border-radius: 6px;
+      font-size: 11px;
+      color: #C8991A;
+      line-height: 1.6;
+    }
   </style>
 </head>
 <body>
@@ -515,6 +587,18 @@
         <label class="symbol-override-label" for="symbol-input">Symbole (si non détecté automatiquement)</label>
         <input class="symbol-override-input" id="symbol-input" type="text"
                placeholder="ex: XAUUSD, EURUSD, BTC/USD, NDX…" autocomplete="off" spellcheck="false" />
+      </div>
+
+      <!-- Position sizing inputs -->
+      <div class="sizing-inputs">
+        <div class="sizing-field">
+          <label for="account-balance">Solde du compte ($)</label>
+          <input type="number" id="account-balance" placeholder="ex: 5000" min="0" step="any" />
+        </div>
+        <div class="sizing-field">
+          <label for="risk-percent">Risque par trade (%)</label>
+          <input type="number" id="risk-percent" placeholder="ex: 1" min="0.01" max="100" step="0.1" />
+        </div>
       </div>
 
       <button id="analyze-btn" disabled>
@@ -583,6 +667,22 @@
         </div>
       </div>
 
+      <!-- Position sizing (shown only when account balance provided) -->
+      <div class="sizing-card" id="sizing-card" style="display:none;">
+        <div class="sizing-title">Position Sizing</div>
+        <div class="sizing-row">
+          <span class="sizing-label">Lot recommandé</span>
+          <span class="sizing-value" id="sizing-lot">—</span>
+        </div>
+        <div class="sizing-row">
+          <span class="sizing-label">Risque sur ce trade</span>
+          <span class="sizing-value" id="sizing-risk">—</span>
+        </div>
+        <div class="sizing-warning">
+          ⚠ Estimation basée sur des tailles de contrat standards. Les spécifications exactes (taille de lot, valeur du pip) varient selon ton courtier — vérifie toujours dans la plateforme de ton courtier avant d'exécuter une position réelle.
+        </div>
+      </div>
+
       <!-- Indicators (shown only when real data available) -->
       <div class="levels-card" id="indicators-wrap" style="display:none;">
         <div class="levels-title">Indicateurs marché réels</div>
@@ -611,22 +711,36 @@
   </div>
 
   <script>
-    const dropZone      = document.getElementById('drop-zone');
-    const fileInput     = document.getElementById('file-input');
-    const browseTrigger = document.getElementById('browse-trigger');
-    const placeholder   = document.getElementById('upload-placeholder');
-    const previewWrap   = document.getElementById('preview-wrap');
-    const previewImg    = document.getElementById('preview-img');
-    const removeBtn     = document.getElementById('remove-btn');
-    const analyzeBtn    = document.getElementById('analyze-btn');
-    const btnLabel      = document.getElementById('btn-label');
-    const spinner       = document.getElementById('spinner');
-    const errorBox      = document.getElementById('error-box');
-    const resultPanel   = document.getElementById('result-panel');
+    const dropZone        = document.getElementById('drop-zone');
+    const fileInput       = document.getElementById('file-input');
+    const browseTrigger   = document.getElementById('browse-trigger');
+    const placeholder     = document.getElementById('upload-placeholder');
+    const previewWrap     = document.getElementById('preview-wrap');
+    const previewImg      = document.getElementById('preview-img');
+    const removeBtn       = document.getElementById('remove-btn');
+    const analyzeBtn      = document.getElementById('analyze-btn');
+    const btnLabel        = document.getElementById('btn-label');
+    const spinner         = document.getElementById('spinner');
+    const errorBox        = document.getElementById('error-box');
+    const resultPanel     = document.getElementById('result-panel');
+    const accountBalanceEl = document.getElementById('account-balance');
+    const riskPercentEl    = document.getElementById('risk-percent');
 
     let currentBase64 = null;
     let currentMediaType = null;
     let currentMode = 'swing';
+
+    // ── Position sizing — localStorage persistence ─────────
+    (function initSizingInputs() {
+      const savedBal  = localStorage.getItem('st_account_balance');
+      const savedRisk = localStorage.getItem('st_risk_percent');
+      if (savedBal)  accountBalanceEl.value = savedBal;
+      riskPercentEl.value = savedRisk != null ? savedRisk : '1';
+    })();
+    accountBalanceEl.addEventListener('input', () =>
+      localStorage.setItem('st_account_balance', accountBalanceEl.value));
+    riskPercentEl.addEventListener('input', () =>
+      localStorage.setItem('st_risk_percent', riskPercentEl.value));
 
     // ── Mode toggle ────────────────────────────────────────
     document.querySelectorAll('.mode-btn').forEach(btn => {
@@ -725,14 +839,18 @@
       resultPanel.style.display = 'none';
 
       try {
+        const balVal  = parseFloat(accountBalanceEl.value);
+        const riskVal = parseFloat(riskPercentEl.value);
         const res = await fetch('/api/analyze-chart', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            image_base64:    currentBase64,
-            media_type:      currentMediaType,
-            mode:            currentMode,
-            symbol_override: document.getElementById('symbol-input').value.trim() || undefined,
+            image_base64:     currentBase64,
+            media_type:       currentMediaType,
+            mode:             currentMode,
+            symbol_override:  document.getElementById('symbol-input').value.trim() || undefined,
+            account_balance:  isFinite(balVal)  && balVal  > 0   ? balVal  : undefined,
+            risk_percent:     isFinite(riskVal) && riskVal > 0   ? riskVal : undefined,
           }),
         });
 
@@ -817,6 +935,18 @@
         indWrap.style.display = 'block';
       } else {
         indWrap.style.display = 'none';
+      }
+
+      // Position sizing
+      const sizingCard = document.getElementById('sizing-card');
+      if (d.lot_size != null && d.risk_amount != null) {
+        document.getElementById('sizing-lot').textContent  = d.lot_size + ' lots';
+        const riskPct = parseFloat(riskPercentEl.value) || 1;
+        document.getElementById('sizing-risk').textContent =
+          '$' + Number(d.risk_amount).toFixed(2) + ' (' + riskPct.toFixed(1) + '% du solde)';
+        sizingCard.style.display = 'block';
+      } else {
+        sizingCard.style.display = 'none';
       }
 
       resultPanel.style.display = 'flex';
