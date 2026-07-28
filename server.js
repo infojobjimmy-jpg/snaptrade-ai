@@ -412,7 +412,8 @@ app.post('/api/analyze-chart', async (req, res) => {
   const remaining    = () => HANDLER_BUDGET_MS - (Date.now() - handlerStart);
 
   try {
-    const { image_base64, media_type, mode, symbol_override, account_balance, risk_percent } = req.body;
+    const { image_base64, media_type, mode, symbol_override, accountBalance, riskPercent } = req.body;
+    console.log(`[sizing] received accountBalance=${accountBalance} riskPercent=${riskPercent}`);
 
     if (!image_base64 || typeof image_base64 !== 'string')
       return res.status(400).json({ error: 'Champ image_base64 manquant ou invalide.' });
@@ -509,7 +510,7 @@ app.post('/api/analyze-chart', async (req, res) => {
 
     // ── Position sizing ──────────────────────────────────────
     const bestSymbol = finalSignal.symbol_guess || marketSym || rawSymbol || null;
-    const sizing = calculateLotSize(account_balance, risk_percent, finalSignal.entry, finalSignal.sl, bestSymbol);
+    const sizing = calculateLotSize(accountBalance, riskPercent, finalSignal.entry, finalSignal.sl, bestSymbol);
 
     console.log(`[analyze] DONE — ${elapsed()}, data_source=${dataSource}`);
     return res.json({
