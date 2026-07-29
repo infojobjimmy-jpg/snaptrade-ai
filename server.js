@@ -26,6 +26,16 @@ const supabase = (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_
 
 if (!supabase) console.warn('[supabase] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — scan history disabled');
 
+// Whop product IDs — one product per plan (each plan is its own Whop product)
+const WHOP_PRODUCTS = {
+  essai:     process.env.WHOP_PRODUCT_ID_ESSAI,
+  fondateur: process.env.WHOP_PRODUCT_ID_FONDATEUR,
+  standard:  process.env.WHOP_PRODUCT_ID_STANDARD,
+  pro:       process.env.WHOP_PRODUCT_ID_PRO,
+};
+// Whop checkout links (used in 403 error messages)
+const WHOP_UPGRADE_URL = process.env.WHOP_UPGRADE_URL || 'https://whop.com/snaptrade-ai';
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -441,6 +451,149 @@ async function saveScan(whopUserId, signal, activeMode, dataSource, sizing) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Whop membership check
+// ─────────────────────────────────────────────────────────────
+
+async function getWhopPlan(whopUserId) {
+  const key = process.env.WHOP_API_KEY;
+  if (!key) return 'dev'; // no key configured — allow all (local dev)
+
+  // If no product IDs are configured yet, gating is not yet active
+  const anyProductConfigured = Object.values(WHOP_PRODUCTS).some(Boolean);
+  if (!anyProductConfigured) return 'dev';
+
+  try {
+    const resp = await axios.get('https://api.whop.com/api/v2/memberships', {
+      params: { user_id: whopUserId, status: 'active', per: 50 },
+      headers: { Authorization: `Bearer ${key}` },
+      timeout: 6000,
+    });
+
+    const memberships = resp.data?.data || [];
+    // Build reverse map: productId → plan name
+    const productMap = {};
+    for (const [plan, prodId] of Object.entries(WHOP_PRODUCTS)) {
+      if (prodId) productMap[prodId] = plan;
+    }
+
+    // Priority: pro > fondateur > standard > essai
+    const priority = ['pro', 'fondateur', 'standard', 'essai'];
+    const foundPlans = new Set();
+    for (const m of memberships) {
+      const pid = m.access_pass || m.product_id || m.product;
+      if (productMap[pid]) foundPlans.add(productMap[pid]);
+    }
+    for (const p of priority) {
+      if (foundPlans.has(p)) return p;
+    }
+    return null;
+  } catch (err) {
+    console.error('[whop] Membership check error:', err.message);
+    return null; // fail closed on network error
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Quota management (Supabase user_quotas table)
+// ─────────────────────────────────────────────────────────────
+
+async function checkAndIncrementQuota(whopUserId, plan) {
+  if (!supabase) return { allowed: true }; // no DB = no quota enforcement
+
+  const now = new Date();
+
+  // Upsert quota row
+  let { data: quota, error: fetchErr } = await supabase
+    .from('user_quotas')
+    .select('*')
+    .eq('whop_user_id', whopUserId)
+    .single();
+
+  if (fetchErr && fetchErr.code === 'PGRST116') {
+    // First time this user — create row
+    const { data: newRow, error: insErr } = await supabase
+      .from('user_quotas')
+      .insert({ whop_user_id: whopUserId, plan, period_start: now })
+      .select()
+      .single();
+    if (insErr) { console.error('[quota] Insert error:', insErr.message); return { allowed: true }; }
+    quota = newRow;
+  } else if (fetchErr) {
+    console.error('[quota] Fetch error:', fetchErr.message);
+    return { allowed: true }; // fail open on unexpected DB error
+  }
+
+  // Sync plan if it changed (e.g. user upgraded)
+  if (quota.plan !== plan) {
+    await supabase.from('user_quotas').update({ plan, updated_at: now }).eq('whop_user_id', whopUserId);
+    quota.plan = plan;
+  }
+
+  // Monthly reset for standard plan
+  const periodStart = new Date(quota.period_start);
+  const monthsPassed = (now.getFullYear() - periodStart.getFullYear()) * 12 + (now.getMonth() - periodStart.getMonth());
+  if (monthsPassed >= 1 && plan === 'standard') {
+    await supabase.from('user_quotas')
+      .update({ scans_used_this_month: 0, period_start: now, updated_at: now })
+      .eq('whop_user_id', whopUserId);
+    quota.scans_used_this_month = 0;
+  }
+
+  // Quota checks
+  if (plan === 'essai' && quota.scans_used_lifetime >= 5) {
+    return { allowed: false, reason: 'quota_essai' };
+  }
+  if (plan === 'standard' && quota.scans_used_this_month >= 300) {
+    return { allowed: false, reason: 'quota_standard' };
+  }
+  // pro and fondateur: unlimited (rate limit still applies via IP middleware)
+
+  // Increment counters atomically
+  const { error: updErr } = await supabase.from('user_quotas').update({
+    scans_used_this_month: (quota.scans_used_this_month || 0) + 1,
+    scans_used_lifetime:   (quota.scans_used_lifetime   || 0) + 1,
+    updated_at: now,
+  }).eq('whop_user_id', whopUserId);
+  if (updErr) console.error('[quota] Increment error:', updErr.message);
+
+  return { allowed: true };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Whop gating middleware
+// ─────────────────────────────────────────────────────────────
+
+async function whopGating(req, res, next) {
+  const whopUserId = (req.body?.whop_user_id || '').toString().trim();
+
+  if (!whopUserId) {
+    return res.status(401).json({ error: 'ID membre Whop requis. Entre ton ID dans le champ en haut du formulaire.' });
+  }
+
+  const plan = await getWhopPlan(whopUserId);
+
+  if (plan === null) {
+    return res.status(403).json({
+      error: `Aucun abonnement SnapTrade AI actif trouvé. Obtiens l'accès sur ${WHOP_UPGRADE_URL}`,
+    });
+  }
+
+  const quota = await checkAndIncrementQuota(whopUserId, plan);
+
+  if (!quota.allowed) {
+    const msgs = {
+      quota_essai:    `Tu as utilisé tes 5 scans gratuits à vie. Passe au plan Standard (14.99$/mois) → ${WHOP_UPGRADE_URL}`,
+      quota_standard: `Tu as atteint ta limite de 300 scans ce mois-ci. Passe au plan Pro (24.99$/mois) → ${WHOP_UPGRADE_URL}`,
+    };
+    return res.status(403).json({ error: msgs[quota.reason] || 'Quota atteint pour ton palier.' });
+  }
+
+  req.whopUserId = whopUserId;
+  req.whopPlan   = plan;
+  next();
+}
+
+// ─────────────────────────────────────────────────────────────
 // Rate limiting — /api/analyze-chart
 //
 // Ces seuils sont un point de départ conservateur pour bloquer l'abus
@@ -475,7 +628,7 @@ const burstLimiter = rateLimit({
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, async (req, res) => {
+app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, whopGating, async (req, res) => {
   const handlerStart = Date.now();
   const elapsed      = () => `${Date.now() - handlerStart}ms`;
   const remaining    = () => HANDLER_BUDGET_MS - (Date.now() - handlerStart);
@@ -584,7 +737,7 @@ app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, async (req, res) => 
     console.log(`[analyze] DONE — ${elapsed()}, data_source=${dataSource}`);
 
     // Fire-and-forget — never block the response on DB write
-    saveScan(req.body.whop_user_id, finalSignal, activeMode, dataSource, sizing);
+    saveScan(req.whopUserId || req.body.whop_user_id, finalSignal, activeMode, dataSource, sizing);
 
     return res.json({
       ...finalSignal,
@@ -611,6 +764,17 @@ app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, async (req, res) => 
 
     return res.status(500).json({ error: err.message || 'Erreur serveur interne.' });
   }
+});
+
+app.get('/api/quota/:whop_user_id', async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'Quota non disponible.' });
+  const { data, error } = await supabase
+    .from('user_quotas')
+    .select('plan,scans_used_this_month,scans_used_lifetime,period_start')
+    .eq('whop_user_id', req.params.whop_user_id)
+    .single();
+  if (error) return res.status(404).json({ plan: null, scans_used: 0 });
+  return res.json(data);
 });
 
 app.get('/api/scans/:whop_user_id', async (req, res) => {

@@ -614,6 +614,7 @@
         <span id="btn-label">Analyser le graphique</span>
       </button>
 
+      <div id="quota-badge" style="display:none;margin-top:8px;font-size:11px;color:var(--muted);text-align:center;"></div>
       <div id="error-box" role="alert"></div>
     </div>
 
@@ -734,6 +735,7 @@
     const accountBalanceEl = document.getElementById('account-balance');
     const riskPercentEl    = document.getElementById('risk-percent');
     const whopIdEl         = document.getElementById('whop-id-input');
+    const quotaBadgeEl     = document.getElementById('quota-badge');
 
     let currentBase64 = null;
     let currentMediaType = null;
@@ -896,6 +898,7 @@
         }
 
         renderResult(data);
+        fetchQuotaBadge(whopId);
       } catch (networkErr) {
         console.error('[SnapTrade fetch error]', networkErr);
         showError(`Erreur réseau : ${networkErr.message || 'connexion interrompue'}. Vérifiez votre connexion et réessayez.`);
@@ -1024,6 +1027,30 @@
     function hideError() {
       errorBox.style.display = 'none';
       errorBox.textContent = '';
+    }
+
+    async function fetchQuotaBadge(whopId) {
+      if (!whopId) return;
+      try {
+        const r = await fetch(`/api/quota/${encodeURIComponent(whopId)}`);
+        if (!r.ok) return;
+        const q = await r.json();
+        if (!q || !q.plan) return;
+        let msg = '';
+        if (q.plan === 'essai') {
+          const remaining = Math.max(0, 5 - (q.scans_used_lifetime || 0));
+          msg = `Plan Essai — ${remaining} scan${remaining !== 1 ? 's' : ''} gratuit${remaining !== 1 ? 's' : ''} restant${remaining !== 1 ? 's' : ''}`;
+        } else if (q.plan === 'standard') {
+          const remaining = Math.max(0, 300 - (q.scans_used_this_month || 0));
+          msg = `Plan Standard — ${remaining} scan${remaining !== 1 ? 's' : ''} restant${remaining !== 1 ? 's' : ''} ce mois`;
+        } else if (q.plan === 'pro') {
+          msg = 'Plan Pro — Scans illimités';
+        } else if (q.plan === 'fondateur') {
+          msg = 'Accès Fondateur — Scans illimités';
+        }
+        quotaBadgeEl.textContent = msg;
+        quotaBadgeEl.style.display = msg ? 'block' : 'none';
+      } catch {}
     }
   </script>
 </body>
