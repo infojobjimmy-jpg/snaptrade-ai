@@ -1,12 +1,16 @@
 'use strict';
 
-const express = require('express');
-const path    = require('path');
-const axios   = require('axios');
+const express   = require('express');
+const path      = require('path');
+const axios     = require('axios');
 const Anthropic = require('@anthropic-ai/sdk');
+const rateLimit = require('express-rate-limit');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+
+// Trust Railway's reverse proxy so req.ip reflects the real client IP
+app.set('trust proxy', 1);
 
 // Per-call Anthropic budgets — two calls must fit inside Railway's 60s proxy cut
 const FIRST_PASS_TIMEOUT  = 28000; // ms
@@ -401,12 +405,41 @@ function validateSignal(data) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Rate limiting — /api/analyze-chart
+//
+// Ces seuils sont un point de départ conservateur pour bloquer l'abus
+// par script avant le lancement des paliers payants. Une fois Whop +
+// Supabase en place, remplacer ces limites IP par des quotas par
+// utilisateur liés à l'abonnement (ex: 50/jour Free, 200/jour Pro).
+// ─────────────────────────────────────────────────────────────
+
+const RATE_LIMIT_MSG = { error: 'Trop de requêtes. Réessaie dans quelques minutes.' };
+
+// 20 scans / heure par IP — protège contre l'abus soutenu
+const hourlyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-6', // ajoute RateLimit-Limit / RateLimit-Remaining / RateLimit-Reset
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).json(RATE_LIMIT_MSG),
+});
+
+// 5 scans / 10 min par IP — protège contre le spam en rafale
+const burstLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-6',
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).json(RATE_LIMIT_MSG),
+});
+
+// ─────────────────────────────────────────────────────────────
 // Routes
 // ─────────────────────────────────────────────────────────────
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-app.post('/api/analyze-chart', async (req, res) => {
+app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, async (req, res) => {
   const handlerStart = Date.now();
   const elapsed      = () => `${Date.now() - handlerStart}ms`;
   const remaining    = () => HANDLER_BUDGET_MS - (Date.now() - handlerStart);

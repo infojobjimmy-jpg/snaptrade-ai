@@ -863,6 +863,10 @@
           return;
         }
 
+        if (res.status === 429) {
+          showError(data.error || 'Trop de requêtes. Réessaie dans quelques minutes.');
+          return;
+        }
         if (!res.ok) {
           showError(data.error || `Erreur serveur (${res.status}). Réessayez.`);
           return;
