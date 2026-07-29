@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
+    "@supabase/supabase-js": "^2.111.0",
     "axios": "^1.7.9",
     "express": "^4.19.2",
     "express-rate-limit": "^8.6.1"

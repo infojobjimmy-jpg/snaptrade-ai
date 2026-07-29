@@ -582,6 +582,14 @@
 
       <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" />
 
+      <!-- Whop Member ID -->
+      <div class="symbol-override-wrap" style="margin-bottom:0;">
+        <label class="symbol-override-label" for="whop-id-input">ID membre Whop <span style="color:var(--sell)">*</span></label>
+        <input class="symbol-override-input" id="whop-id-input" type="text"
+               placeholder="ex: user_xxxxxxxxxxxx" autocomplete="off" spellcheck="false" />
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">Trouvable dans ton profil Whop. Requis pour accéder à l'outil.</div>
+      </div>
+
       <!-- Optional symbol override -->
       <div class="symbol-override-wrap">
         <label class="symbol-override-label" for="symbol-input">Symbole (si non détecté automatiquement)</label>
@@ -725,18 +733,23 @@
     const resultPanel     = document.getElementById('result-panel');
     const accountBalanceEl = document.getElementById('account-balance');
     const riskPercentEl    = document.getElementById('risk-percent');
+    const whopIdEl         = document.getElementById('whop-id-input');
 
     let currentBase64 = null;
     let currentMediaType = null;
     let currentMode = 'swing';
 
-    // ── Position sizing — localStorage persistence ─────────
-    (function initSizingInputs() {
-      const savedBal  = localStorage.getItem('st_account_balance');
-      const savedRisk = localStorage.getItem('st_risk_percent');
-      if (savedBal)  accountBalanceEl.value = savedBal;
+    // ── Whop ID + position sizing — localStorage persistence ──
+    (function initInputs() {
+      const savedWhopId = localStorage.getItem('st_whop_user_id');
+      const savedBal    = localStorage.getItem('st_account_balance');
+      const savedRisk   = localStorage.getItem('st_risk_percent');
+      if (savedWhopId) whopIdEl.value = savedWhopId;
+      if (savedBal)    accountBalanceEl.value = savedBal;
       riskPercentEl.value = savedRisk != null ? savedRisk : '1';
     })();
+    whopIdEl.addEventListener('input', () =>
+      localStorage.setItem('st_whop_user_id', whopIdEl.value.trim()));
     accountBalanceEl.addEventListener('input', () =>
       localStorage.setItem('st_account_balance', accountBalanceEl.value));
     riskPercentEl.addEventListener('input', () =>
@@ -839,8 +852,9 @@
       resultPanel.style.display = 'none';
 
       try {
-        const balVal  = parseFloat(accountBalanceEl.value);
-        const riskVal = parseFloat(riskPercentEl.value);
+        const balVal    = parseFloat(accountBalanceEl.value);
+        const riskVal   = parseFloat(riskPercentEl.value);
+        const whopId    = whopIdEl.value.trim() || undefined;
         const res = await fetch('/api/analyze-chart', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -851,6 +865,7 @@
             symbol_override:  document.getElementById('symbol-input').value.trim() || undefined,
             accountBalance:  isFinite(balVal)  && balVal  > 0   ? balVal  : undefined,
             riskPercent:     isFinite(riskVal) && riskVal > 0   ? riskVal : undefined,
+            whop_user_id:    whopId,
           }),
         });
 
@@ -863,6 +878,14 @@
           return;
         }
 
+        if (res.status === 401) {
+          showError(data.error || 'ID membre Whop requis. Entre ton ID dans le champ ci-dessus.');
+          return;
+        }
+        if (res.status === 403) {
+          showError(data.error || 'Quota atteint pour ton palier.');
+          return;
+        }
         if (res.status === 429) {
           showError(data.error || 'Trop de requêtes. Réessaie dans quelques minutes.');
           return;

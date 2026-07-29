@@ -1,10 +1,11 @@
 'use strict';
 
-const express   = require('express');
-const path      = require('path');
-const axios     = require('axios');
-const Anthropic = require('@anthropic-ai/sdk');
-const rateLimit = require('express-rate-limit');
+const express      = require('express');
+const path         = require('path');
+const axios        = require('axios');
+const Anthropic    = require('@anthropic-ai/sdk');
+const rateLimit    = require('express-rate-limit');
+const { createClient } = require('@supabase/supabase-js');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -18,6 +19,12 @@ const SECOND_PASS_TIMEOUT = 22000; // ms
 const HANDLER_BUDGET_MS   = 56000; // total handler budget
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+const supabase = (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
+  : null;
+
+if (!supabase) console.warn('[supabase] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — scan history disabled');
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -405,6 +412,35 @@ function validateSignal(data) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Supabase helpers
+// ─────────────────────────────────────────────────────────────
+
+async function saveScan(whopUserId, signal, activeMode, dataSource, sizing) {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase.from('scans').insert({
+      whop_user_id: whopUserId || null,
+      symbol_guess: signal.symbol_guess,
+      direction:    signal.direction,
+      confidence:   signal.confidence,
+      entry:        signal.entry,
+      tp1:          signal.tp1,
+      tp2:          signal.tp2,
+      sl:           signal.sl,
+      rr_ratio:     signal.rr_ratio,
+      mode:         activeMode,
+      data_source:  dataSource,
+      lot_size:     sizing ? sizing.lot_size : null,
+      reasoning:    signal.reasoning,
+    });
+    if (error) console.error('[supabase] Insert scan error:', error.message);
+    else       console.log('[supabase] Scan saved for user:', whopUserId || 'anonymous');
+  } catch (err) {
+    console.error('[supabase] saveScan exception:', err.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Rate limiting — /api/analyze-chart
 //
 // Ces seuils sont un point de départ conservateur pour bloquer l'abus
@@ -546,6 +582,10 @@ app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, async (req, res) => 
     const sizing = calculateLotSize(accountBalance, riskPercent, finalSignal.entry, finalSignal.sl, bestSymbol);
 
     console.log(`[analyze] DONE — ${elapsed()}, data_source=${dataSource}`);
+
+    // Fire-and-forget — never block the response on DB write
+    saveScan(req.body.whop_user_id, finalSignal, activeMode, dataSource, sizing);
+
     return res.json({
       ...finalSignal,
       mode:               activeMode,
@@ -571,6 +611,18 @@ app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, async (req, res) => 
 
     return res.status(500).json({ error: err.message || 'Erreur serveur interne.' });
   }
+});
+
+app.get('/api/scans/:whop_user_id', async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'Historique non disponible.' });
+  const { data, error } = await supabase
+    .from('scans')
+    .select('*')
+    .eq('whop_user_id', req.params.whop_user_id)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json(data);
 });
 
 // Global error handler — ensures body-parser errors return JSON
