@@ -26,12 +26,12 @@ const supabase = (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_
 
 if (!supabase) console.warn('[supabase] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — scan history disabled');
 
-// Whop product IDs — one product per plan (each plan is its own Whop product)
-const WHOP_PRODUCTS = {
-  essai:     process.env.WHOP_PRODUCT_ID_ESSAI,
-  fondateur: process.env.WHOP_PRODUCT_ID_FONDATEUR,
-  standard:  process.env.WHOP_PRODUCT_ID_STANDARD,
-  pro:       process.env.WHOP_PRODUCT_ID_PRO,
+// Whop plan IDs — map plan_xxx → tier name (4 plans under 1 SnapTrade AI product)
+const WHOP_PLANS = {
+  essai:     process.env.WHOP_PLAN_ID_ESSAI,
+  fondateur: process.env.WHOP_PLAN_ID_FONDATEUR,
+  standard:  process.env.WHOP_PLAN_ID_STANDARD,
+  pro:       process.env.WHOP_PLAN_ID_PRO,
 };
 // Whop checkout links (used in 403 error messages)
 const WHOP_UPGRADE_URL = process.env.WHOP_UPGRADE_URL || 'https://whop.com/snaptrade-ai';
@@ -458,9 +458,9 @@ async function getWhopPlan(whopUserId) {
   const key = process.env.WHOP_API_KEY;
   if (!key) return 'dev'; // no key configured — allow all (local dev)
 
-  // If no product IDs are configured yet, gating is not yet active
-  const anyProductConfigured = Object.values(WHOP_PRODUCTS).some(Boolean);
-  if (!anyProductConfigured) return 'dev';
+  // If no plan IDs are configured yet, gating is not yet active — allow through
+  const anyPlanConfigured = Object.values(WHOP_PLANS).some(Boolean);
+  if (!anyPlanConfigured) return 'dev';
 
   try {
     const resp = await axios.get('https://api.whop.com/api/v2/memberships', {
@@ -470,21 +470,21 @@ async function getWhopPlan(whopUserId) {
     });
 
     const memberships = resp.data?.data || [];
-    // Build reverse map: productId → plan name
-    const productMap = {};
-    for (const [plan, prodId] of Object.entries(WHOP_PRODUCTS)) {
-      if (prodId) productMap[prodId] = plan;
+    // Build reverse map: plan_xxx → tier name
+    const planMap = {};
+    for (const [tier, planId] of Object.entries(WHOP_PLANS)) {
+      if (planId) planMap[planId] = tier;
     }
 
     // Priority: pro > fondateur > standard > essai
     const priority = ['pro', 'fondateur', 'standard', 'essai'];
-    const foundPlans = new Set();
+    const foundTiers = new Set();
     for (const m of memberships) {
-      const pid = m.access_pass || m.product_id || m.product;
-      if (productMap[pid]) foundPlans.add(productMap[pid]);
+      const planId = m.plan; // e.g. "plan_xxx"
+      if (planMap[planId]) foundTiers.add(planMap[planId]);
     }
     for (const p of priority) {
-      if (foundPlans.has(p)) return p;
+      if (foundTiers.has(p)) return p;
     }
     return null;
   } catch (err) {
