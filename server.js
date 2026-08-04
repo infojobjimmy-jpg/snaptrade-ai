@@ -464,7 +464,7 @@ async function getWhopPlan(whopUserId) {
 
   try {
     const resp = await axios.get('https://api.whop.com/api/v2/memberships', {
-      params: { user_id: whopUserId, status: 'active', per: 50 },
+      params: { user_id: whopUserId, per: 50 },
       headers: { Authorization: `Bearer ${key}` },
       timeout: 6000,
     });
@@ -477,9 +477,11 @@ async function getWhopPlan(whopUserId) {
     }
 
     // Priority: pro > fondateur > standard > essai
+    // Accept active + trialing (free trial) — check valid:true instead of filtering by status
     const priority = ['pro', 'fondateur', 'standard', 'essai'];
     const foundTiers = new Set();
     for (const m of memberships) {
+      if (!m.valid) continue; // skip expired/cancelled
       const planId = m.plan; // e.g. "plan_xxx"
       if (planMap[planId]) foundTiers.add(planMap[planId]);
     }
