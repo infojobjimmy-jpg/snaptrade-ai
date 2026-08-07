@@ -2,6 +2,7 @@
 
 const express      = require('express');
 const path         = require('path');
+const crypto       = require('crypto');
 const axios        = require('axios');
 const Anthropic    = require('@anthropic-ai/sdk');
 const rateLimit    = require('express-rate-limit');
@@ -9,6 +10,12 @@ const { createClient } = require('@supabase/supabase-js');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+
+// Volatile ledger for the paper-trading confirmation flow. It is intentionally
+// isolated from every broker/FIX connector: no live order can leave this app.
+const paperOrders = [];
+const PAPER_ORDER_LIMIT = 250;
+const PAPER_PLATFORMS = new Set(['snaptrade-paper', 'mt5-demo', 'ctrader-demo']);
 
 // Trust Railway's reverse proxy so req.ip reflects the real client IP
 app.set('trust proxy', 1);
@@ -421,6 +428,33 @@ function validateSignal(data) {
   };
 }
 
+function validatePaperOrder(body) {
+  const platform = typeof body.platform === 'string' ? body.platform.trim() : '';
+  const direction = typeof body.direction === 'string' ? body.direction.toLowerCase() : '';
+  const symbol = typeof body.symbol === 'string' ? body.symbol.trim().toUpperCase() : '';
+  const whopUserId = typeof body.whop_user_id === 'string' ? body.whop_user_id.trim() : '';
+  const numbers = ['entry', 'tp1', 'tp2', 'sl', 'lot_size'].reduce((acc, key) => {
+    acc[key] = Number(body[key]);
+    return acc;
+  }, {});
+
+  if (!whopUserId) throw new Error('ID membre Whop requis.');
+  if (!PAPER_PLATFORMS.has(platform)) throw new Error('Plateforme de démonstration invalide.');
+  if (!['buy', 'sell'].includes(direction)) throw new Error('Direction invalide.');
+  if (!symbol || symbol.length > 30 || !/^[A-Z0-9/_.=-]+$/.test(symbol))
+    throw new Error('Symbole invalide.');
+  if (Object.values(numbers).some(value => !Number.isFinite(value) || value <= 0))
+    throw new Error('Entry, TP1, TP2, SL et lot doivent être des nombres positifs.');
+  if (numbers.lot_size > 100) throw new Error('Lot de démonstration trop élevé.');
+
+  const levelsAreValid = direction === 'buy'
+    ? numbers.sl < numbers.entry && numbers.tp1 > numbers.entry && numbers.tp2 >= numbers.tp1
+    : numbers.sl > numbers.entry && numbers.tp1 < numbers.entry && numbers.tp2 <= numbers.tp1;
+  if (!levelsAreValid) throw new Error('Les niveaux Entry, TP et SL ne correspondent pas à la direction du signal.');
+
+  return { platform, direction, symbol, whopUserId, ...numbers };
+}
+
 // ─────────────────────────────────────────────────────────────
 // Supabase helpers
 // ─────────────────────────────────────────────────────────────
@@ -765,6 +799,40 @@ app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, whopGating, async (r
       return res.status(502).json({ error: 'Réponse IA invalide. Réessayez.' });
 
     return res.status(500).json({ error: err.message || 'Erreur serveur interne.' });
+  }
+});
+
+// Paper-trading only. This route never imports or calls a broker connector.
+app.post('/api/paper-orders', (req, res) => {
+  try {
+    const data = validatePaperOrder(req.body || {});
+    const order = {
+      id: `DEMO-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+      status: 'placed_demo',
+      platform: data.platform,
+      symbol: data.symbol,
+      direction: data.direction,
+      entry: data.entry,
+      tp1: data.tp1,
+      tp2: data.tp2,
+      sl: data.sl,
+      lot_size: data.lot_size,
+      whop_user_id: data.whopUserId,
+      created_at: new Date().toISOString(),
+      live_execution: false,
+    };
+
+    paperOrders.unshift(order);
+    if (paperOrders.length > PAPER_ORDER_LIMIT) paperOrders.length = PAPER_ORDER_LIMIT;
+
+    console.log(`[paper-order] ${order.id} ${order.direction.toUpperCase()} ${order.symbol} ${order.lot_size} lot — ${order.platform}`);
+    return res.status(201).json({
+      status: order.status,
+      message: 'Ordre de démonstration placé. Aucun ordre réel n’a été envoyé.',
+      order,
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Ordre de démonstration invalide.' });
   }
 });
 

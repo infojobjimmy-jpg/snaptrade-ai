@@ -538,6 +538,156 @@
       color: #C8991A;
       line-height: 1.6;
     }
+
+    /* ── Paper order confirmation flow ── */
+    .platform-wrap {
+      margin-top: 12px;
+      padding: 14px;
+      background: rgba(31, 201, 139, .05);
+      border: 1px solid rgba(31, 201, 139, .2);
+      border-radius: 8px;
+    }
+    .platform-wrap label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--buy);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .7px;
+      text-transform: uppercase;
+    }
+    #platform-select {
+      width: 100%;
+      padding: 10px 12px;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-family: var(--sans);
+      outline: none;
+      cursor: pointer;
+    }
+    #platform-select:focus { border-color: var(--buy); }
+    .platform-note {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .execution-card {
+      background: var(--surface);
+      border: 1px solid rgba(31, 201, 139, .32);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .execution-title {
+      color: var(--buy);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .execution-copy {
+      margin: 6px 0 14px;
+      color: #B8C4D0;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .demo-pill {
+      display: inline-flex;
+      margin-left: 6px;
+      padding: 2px 7px;
+      color: #08130F;
+      background: var(--buy);
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .6px;
+      vertical-align: middle;
+    }
+    .order-action-btn {
+      width: 100%;
+      padding: 12px 14px;
+      border: 0;
+      border-radius: 8px;
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .2s, transform .1s;
+    }
+    .order-action-btn:active:not(:disabled) { transform: scale(.99); }
+    .order-action-btn:disabled { cursor: not-allowed; opacity: .42; }
+    .prepare-order-btn, .accept-order-btn { color: #06120D; background: var(--buy); }
+    .prepare-order-btn:hover:not(:disabled), .accept-order-btn:hover:not(:disabled) { opacity: .88; }
+    .refuse-order-btn {
+      color: #F08083;
+      background: transparent;
+      border: 1px solid rgba(229, 72, 77, .45);
+    }
+    .order-review {
+      display: none;
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+    .order-review-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .order-review-item {
+      padding: 9px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      min-width: 0;
+    }
+    .order-review-label {
+      color: var(--muted);
+      font-size: 9px;
+      letter-spacing: .8px;
+      text-transform: uppercase;
+    }
+    .order-review-value {
+      margin-top: 2px;
+      overflow-wrap: anywhere;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .order-review-warning {
+      margin-bottom: 12px;
+      padding: 9px 10px;
+      color: #C8991A;
+      background: rgba(245, 166, 35, .08);
+      border: 1px solid rgba(245, 166, 35, .22);
+      border-radius: 6px;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .order-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .order-status {
+      display: none;
+      margin-top: 12px;
+      padding: 11px 12px;
+      border-radius: 7px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .order-status.success { display: block; color: var(--buy); background: rgba(31,201,139,.09); border: 1px solid rgba(31,201,139,.3); }
+    .order-status.refused { display: block; color: #B8C4D0; background: var(--surface2); border: 1px solid var(--border); }
+    .order-status.error { display: block; color: #F08083; background: rgba(229,72,77,.09); border: 1px solid rgba(229,72,77,.3); }
+
+    @media (max-width: 520px) {
+      .order-buttons { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -607,6 +757,16 @@
           <label for="risk-percent">Risque par trade (%)</label>
           <input type="number" id="risk-percent" placeholder="ex: 1" min="0.01" max="100" step="0.1" />
         </div>
+      </div>
+
+      <div class="platform-wrap">
+        <label for="platform-select">Plateforme de démonstration</label>
+        <select id="platform-select">
+          <option value="mt5-demo">MetaTrader 5 — Démo</option>
+          <option value="ctrader-demo">cTrader — Démo</option>
+          <option value="snaptrade-paper">SnapTrade Paper</option>
+        </select>
+        <div class="platform-note">Le résultat pourra être préparé puis accepté ou refusé après le scan. Aucun ordre réel n'est envoyé.</div>
       </div>
 
       <button id="analyze-btn" disabled>
@@ -692,6 +852,34 @@
         </div>
       </div>
 
+      <!-- Explicit paper-order confirmation -->
+      <div class="execution-card" id="execution-card">
+        <div class="execution-title">Envoyer le résultat <span class="demo-pill">DÉMO</span></div>
+        <p class="execution-copy" id="execution-copy">Choisis une plateforme, puis révise l'ordre avant de l'accepter.</p>
+        <button class="order-action-btn prepare-order-btn" id="prepare-order-btn" disabled>
+          Préparer l'ordre démo
+        </button>
+
+        <div class="order-review" id="order-review">
+          <div class="order-review-grid">
+            <div class="order-review-item"><div class="order-review-label">Plateforme</div><div class="order-review-value" id="review-platform">—</div></div>
+            <div class="order-review-item"><div class="order-review-label">Ordre</div><div class="order-review-value" id="review-direction">—</div></div>
+            <div class="order-review-item"><div class="order-review-label">Symbole</div><div class="order-review-value" id="review-symbol">—</div></div>
+            <div class="order-review-item"><div class="order-review-label">Lot</div><div class="order-review-value" id="review-lot">—</div></div>
+            <div class="order-review-item"><div class="order-review-label">Entry</div><div class="order-review-value" id="review-entry">—</div></div>
+            <div class="order-review-item"><div class="order-review-label">SL</div><div class="order-review-value" id="review-sl">—</div></div>
+            <div class="order-review-item"><div class="order-review-label">TP1</div><div class="order-review-value" id="review-tp1">—</div></div>
+            <div class="order-review-item"><div class="order-review-label">TP2</div><div class="order-review-value" id="review-tp2">—</div></div>
+          </div>
+          <div class="order-review-warning">Vérifie chaque niveau. « Accepter » crée uniquement un ordre simulé; « Refuser » ne fait rien.</div>
+          <div class="order-buttons" id="order-buttons">
+            <button class="order-action-btn accept-order-btn" id="accept-order-btn">Accepter en démo</button>
+            <button class="order-action-btn refuse-order-btn" id="refuse-order-btn">Refuser</button>
+          </div>
+        </div>
+        <div class="order-status" id="order-status" role="status" aria-live="polite"></div>
+      </div>
+
       <!-- Indicators (shown only when real data available) -->
       <div class="levels-card" id="indicators-wrap" style="display:none;">
         <div class="levels-title">Indicateurs marché réels</div>
@@ -736,19 +924,31 @@
     const riskPercentEl    = document.getElementById('risk-percent');
     const whopIdEl         = document.getElementById('whop-id-input');
     const quotaBadgeEl     = document.getElementById('quota-badge');
+    const platformSelectEl = document.getElementById('platform-select');
+    const prepareOrderBtn  = document.getElementById('prepare-order-btn');
+    const acceptOrderBtn   = document.getElementById('accept-order-btn');
+    const refuseOrderBtn   = document.getElementById('refuse-order-btn');
+    const orderReviewEl    = document.getElementById('order-review');
+    const orderButtonsEl   = document.getElementById('order-buttons');
+    const orderStatusEl    = document.getElementById('order-status');
 
     let currentBase64 = null;
     let currentMediaType = null;
     let currentMode = 'swing';
+    let currentSignal = null;
 
     // ── Whop ID + position sizing — localStorage persistence ──
     (function initInputs() {
       const savedWhopId = localStorage.getItem('st_whop_user_id');
       const savedBal    = localStorage.getItem('st_account_balance');
       const savedRisk   = localStorage.getItem('st_risk_percent');
+      const savedPlatform = localStorage.getItem('st_demo_platform');
       if (savedWhopId) whopIdEl.value = savedWhopId;
       if (savedBal)    accountBalanceEl.value = savedBal;
       riskPercentEl.value = savedRisk != null ? savedRisk : '1';
+      if (savedPlatform && Array.from(platformSelectEl.options).some(option => option.value === savedPlatform)) {
+        platformSelectEl.value = savedPlatform;
+      }
     })();
     whopIdEl.addEventListener('input', () =>
       localStorage.setItem('st_whop_user_id', whopIdEl.value.trim()));
@@ -756,6 +956,11 @@
       localStorage.setItem('st_account_balance', accountBalanceEl.value));
     riskPercentEl.addEventListener('input', () =>
       localStorage.setItem('st_risk_percent', riskPercentEl.value));
+    platformSelectEl.addEventListener('change', () => {
+      localStorage.setItem('st_demo_platform', platformSelectEl.value);
+      resetOrderFlow();
+      updatePrepareOrderState();
+    });
 
     // ── Mode toggle ────────────────────────────────────────
     document.querySelectorAll('.mode-btn').forEach(btn => {
@@ -794,6 +999,8 @@
         analyzeBtn.disabled = false;
         hideError();
         resultPanel.style.display = 'none';
+        currentSignal = null;
+        resetOrderFlow();
       };
       reader.readAsDataURL(file);
     }
@@ -809,6 +1016,8 @@
       fileInput.value = '';
       hideError();
       resultPanel.style.display = 'none';
+      currentSignal = null;
+      resetOrderFlow();
     }
 
     // Drag & drop
@@ -909,6 +1118,8 @@
 
     // ── Render result ──────────────────────────────────────
     function renderResult(d) {
+      currentSignal = d;
+      resetOrderFlow();
       const isBuy = d.direction === 'buy';
       const dirCard = document.getElementById('dir-card');
       dirCard.className = isBuy ? 'buy' : 'sell';
@@ -979,6 +1190,8 @@
         sizingCard.style.display = 'none';
       }
 
+      updatePrepareOrderState();
+
       resultPanel.style.display = 'flex';
       resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
@@ -1011,6 +1224,103 @@
       if (isNaN(num)) return String(n);
       return parseFloat(num.toPrecision(7)).toString();
     }
+
+    // ── Paper order flow ────────────────────────────────────
+    function selectedPlatformLabel() {
+      return platformSelectEl.options[platformSelectEl.selectedIndex]?.text || 'Plateforme démo';
+    }
+
+    function hasCompletePaperOrder() {
+      if (!currentSignal) return false;
+      return ['entry', 'tp1', 'tp2', 'sl', 'lot_size'].every(key => {
+        const value = Number(currentSignal[key]);
+        return Number.isFinite(value) && value > 0;
+      }) && Boolean(currentSignal.symbol_guess || document.getElementById('symbol-input').value.trim());
+    }
+
+    function updatePrepareOrderState() {
+      const ready = hasCompletePaperOrder();
+      prepareOrderBtn.disabled = !ready;
+      prepareOrderBtn.textContent = ready
+        ? `Préparer pour ${selectedPlatformLabel()}`
+        : 'Niveaux et lot requis pour préparer l’ordre';
+      document.getElementById('execution-copy').textContent = ready
+        ? 'Le scan est prêt. Révise toutes les valeurs avant de décider.'
+        : 'Pour activer le bouton, le scan doit contenir Entry, TP1, TP2, SL et un lot calculé.';
+    }
+
+    function resetOrderFlow() {
+      orderReviewEl.style.display = 'none';
+      orderButtonsEl.style.display = 'grid';
+      orderStatusEl.className = 'order-status';
+      orderStatusEl.textContent = '';
+      acceptOrderBtn.disabled = false;
+      refuseOrderBtn.disabled = false;
+      acceptOrderBtn.textContent = 'Accepter en démo';
+    }
+
+    prepareOrderBtn.addEventListener('click', () => {
+      if (!hasCompletePaperOrder()) return;
+      const symbol = currentSignal.symbol_guess || document.getElementById('symbol-input').value.trim().toUpperCase();
+      document.getElementById('review-platform').textContent = selectedPlatformLabel();
+      document.getElementById('review-direction').textContent = currentSignal.direction.toUpperCase();
+      document.getElementById('review-symbol').textContent = symbol;
+      document.getElementById('review-lot').textContent = `${currentSignal.lot_size} lots`;
+      document.getElementById('review-entry').textContent = formatPrice(currentSignal.entry);
+      document.getElementById('review-sl').textContent = formatPrice(currentSignal.sl);
+      document.getElementById('review-tp1').textContent = formatPrice(currentSignal.tp1);
+      document.getElementById('review-tp2').textContent = formatPrice(currentSignal.tp2);
+      orderReviewEl.style.display = 'block';
+      orderStatusEl.className = 'order-status';
+      orderStatusEl.textContent = '';
+      orderReviewEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+
+    refuseOrderBtn.addEventListener('click', () => {
+      orderReviewEl.style.display = 'none';
+      orderStatusEl.className = 'order-status refused';
+      orderStatusEl.textContent = 'Ordre refusé — rien n’a été envoyé ni créé.';
+    });
+
+    acceptOrderBtn.addEventListener('click', async () => {
+      if (!hasCompletePaperOrder()) return;
+      acceptOrderBtn.disabled = true;
+      refuseOrderBtn.disabled = true;
+      acceptOrderBtn.textContent = 'Placement démo…';
+      orderStatusEl.className = 'order-status';
+      orderStatusEl.textContent = '';
+
+      const symbol = currentSignal.symbol_guess || document.getElementById('symbol-input').value.trim().toUpperCase();
+      try {
+        const response = await fetch('/api/paper-orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            whop_user_id: whopIdEl.value.trim(),
+            platform: platformSelectEl.value,
+            symbol,
+            direction: currentSignal.direction,
+            entry: currentSignal.entry,
+            tp1: currentSignal.tp1,
+            tp2: currentSignal.tp2,
+            sl: currentSignal.sl,
+            lot_size: currentSignal.lot_size,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Impossible de créer l’ordre démo.');
+
+        orderButtonsEl.style.display = 'none';
+        orderStatusEl.className = 'order-status success';
+        orderStatusEl.textContent = `Ordre placé en démo ✓ Référence ${data.order.id}. Aucun ordre réel envoyé.`;
+      } catch (err) {
+        acceptOrderBtn.disabled = false;
+        refuseOrderBtn.disabled = false;
+        acceptOrderBtn.textContent = 'Réessayer en démo';
+        orderStatusEl.className = 'order-status error';
+        orderStatusEl.textContent = err.message || 'Erreur pendant la création de l’ordre démo.';
+      }
+    });
 
     // ── UI helpers ─────────────────────────────────────────
     function setLoading(on) {
