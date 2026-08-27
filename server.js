@@ -865,20 +865,26 @@ app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, whopGating, async (r
     });
 
   } catch (err) {
-    console.error(`[analyze] ERROR at ${elapsed()}:`, err.name, err.message);
-    logEvent('analyze_error', req, { meta: { name: err.name, message: (err.message || '').slice(0, 300), at_ms: Date.now() - handlerStart } });
+    console.error(`[analyze] ERROR at ${elapsed()}:`, err.name, err.status, err.message);
+    logEvent('analyze_error', req, { meta: { name: err.name, status: err.status || null, message: (err.message || '').slice(0, 300), at_ms: Date.now() - handlerStart } });
     if (res.headersSent) return;
 
-    if (err.name === 'APITimeoutError' || err.name === 'AbortError' || err.code === 'ETIMEDOUT')
-      return res.status(504).json({ error: `Délai dépassé. Réessayez dans un instant.` });
-    if (err.status === 401)
-      return res.status(500).json({ error: 'Clé API Anthropic invalide.' });
-    if (err.status === 429)
-      return res.status(429).json({ error: 'Limite de débit atteinte. Attendez quelques secondes.' });
-    if (err instanceof SyntaxError || err.message?.includes('JSON'))
-      return res.status(502).json({ error: 'Réponse IA invalide. Réessayez.' });
+    const lower = (err.message || '').toLowerCase();
 
-    return res.status(500).json({ error: err.message || 'Erreur serveur interne.' });
+    // Problème côté fournisseur IA — jamais la faute du client, message neutre
+    const isBilling = err.status === 400 && (lower.includes('credit balance') || lower.includes('billing') || lower.includes('quota'));
+    const isOverloaded = err.status === 529 || err.status === 503 || lower.includes('overloaded');
+    if (isBilling || isOverloaded || err.status === 401 || err.status === 500 || err.status === 502)
+      return res.status(503).json({ error: "Le service d'analyse est momentanément indisponible. Réessaie dans quelques minutes." });
+
+    if (err.name === 'APITimeoutError' || err.name === 'AbortError' || err.code === 'ETIMEDOUT')
+      return res.status(504).json({ error: 'Délai dépassé. Réessaie dans un instant.' });
+    if (err.status === 429)
+      return res.status(429).json({ error: 'Beaucoup de demandes en ce moment. Réessaie dans quelques secondes.' });
+    if (err instanceof SyntaxError || lower.includes('json'))
+      return res.status(502).json({ error: 'Réponse IA invalide. Réessaie.' });
+
+    return res.status(500).json({ error: 'Erreur serveur. Réessaie dans un instant.' });
   }
 });
 
