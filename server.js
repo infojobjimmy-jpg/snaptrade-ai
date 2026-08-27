@@ -1104,6 +1104,18 @@ app.post('/api/admin/kill-switch', requireAdmin, async (req, res) => {
   return res.json({ ok: true, account_id, kill_switch: !!on });
 });
 
+// Admin — retirer une ligne d'ordre (ordre erroné, test, ou déjà géré côté MT5)
+app.delete('/api/admin/orders/:ref', requireAdmin, async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'DB indisponible.' });
+  const ref = (req.params.ref || '').toString().trim();
+  if (!ref) return res.status(400).json({ error: 'ref requis.' });
+  const { data, error } = await supabase.from('orders').delete().eq('ref', ref).select('ref');
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data || !data.length) return res.status(404).json({ error: 'Ordre introuvable.' });
+  console.log(`[orders] admin a supprimé ${ref}`);
+  return res.json({ ok: true, deleted: ref });
+});
+
 app.get('/api/quota/:whop_user_id', async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Quota non disponible.' });
   const { data, error } = await supabase
