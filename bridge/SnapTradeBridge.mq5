@@ -473,17 +473,20 @@ void ManageOne(int i)
    double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
    double curSL = PositionGetDouble(POSITION_SL);
    double curTP = PositionGetDouble(POSITION_TP);
-   double entry = g_pos[i].entry;
+   // Référence = prix d'ouverture RÉEL (slippage inclus), pas l'entrée demandée
+   double entry = PositionGetDouble(POSITION_PRICE_OPEN);
    int d = g_pos[i].dir;
    double buf = BE_BufferPoints * point;
 
-   // 1) Break-even quand TP1 est touché
+   // 1) Break-even quand TP1 est touché — SL au prix d'ouverture + buffer + spread
+   //    (pour qu'un stop touché soit vraiment à l'équilibre, coûts inclus)
    if(BE_AtTP1 && !g_pos[i].be_moved && g_pos[i].tp1 > 0)
    {
       bool hit = (d > 0) ? (bid >= g_pos[i].tp1) : (ask <= g_pos[i].tp1);
       if(hit)
       {
-         double newSL = (d > 0) ? entry + buf : entry - buf;
+         double spread = ask - bid;
+         double newSL = (d > 0) ? entry + buf + spread : entry - buf - spread;
          if((d > 0 && newSL > curSL) || (d < 0 && (curSL == 0 || newSL < curSL)))
          {
             if(trade.PositionModify(g_pos[i].ticket, newSL, curTP))
