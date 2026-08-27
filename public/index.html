@@ -346,6 +346,22 @@
       opacity: .7;
     }
 
+    /* Footer */
+    .site-footer {
+      width: 100%;
+      max-width: 680px;
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.6;
+      text-align: center;
+    }
+    .site-footer a { color: var(--muted); text-decoration: underline; }
+    .site-footer a:hover { color: var(--accent); }
+    .site-footer .risk { display: block; margin-bottom: 8px; opacity: .8; }
+
     /* ── Mode toggle ── */
     .mode-toggle {
       display: flex;
@@ -905,6 +921,17 @@
         Le trading comporte des risques de perte en capital. Consultez un conseiller financier agréé.
       </p>
     </div>
+
+    <footer class="site-footer">
+      <span class="risk">
+        ⚠ Outil éducatif. Les signaux sont générés par IA à partir d'une image statique et
+        peuvent être erronés. Le trading comporte un risque de perte totale du capital.
+        Aucun conseil en investissement. Teste toujours en compte démo.
+      </span>
+      <a href="/privacy">Confidentialité</a> ·
+      <a href="https://whop.com/snaptrade-ai" target="_blank" rel="noopener">Abonnement</a> ·
+      SnapTrade AI
+    </footer>
   </div>
 
   <script>

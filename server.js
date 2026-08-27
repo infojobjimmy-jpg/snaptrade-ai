@@ -1214,6 +1214,7 @@ app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
 });
 
 app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
+app.get('/privacy', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'privacy.html')));
 
 // Global error handler — ensures body-parser errors return JSON
 app.use((err, req, res, _next) => {

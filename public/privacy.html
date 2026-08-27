@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SnapTrade AI — Politique de confidentialité</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg:#0B0E11; --surface:#151A21; --border:#232D3B; --accent:#4C8DFF; --text:#E8ECF0; --muted:#6B7A8D; }
+    html, body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 15px; line-height: 1.65; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 40px 20px 80px; }
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
+    h2 { font-size: 16px; font-weight: 600; margin: 28px 0 8px; color: var(--text); }
+    p, li { color: #C4CDd8; margin-bottom: 10px; }
+    ul { padding-left: 20px; }
+    a { color: var(--accent); }
+    .updated { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+    .back { display: inline-block; margin-top: 32px; color: var(--muted); font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Politique de confidentialité — SnapTrade AI</h1>
+    <p class="updated">Dernière mise à jour : 27 août 2026</p>
+
+    <p>
+      SnapTrade AI (« l'outil ») analyse des captures d'écran de graphiques de trading à l'aide
+      de l'intelligence artificielle. Cette page décrit les renseignements que nous recueillons,
+      pourquoi, et les choix dont tu disposes. Nous respectons la <em>Loi sur la protection des
+      renseignements personnels dans le secteur privé</em> (Loi 25, Québec) et la <em>LPRPDE</em> (PIPEDA).
+    </p>
+
+    <h2>Renseignements que nous recueillons</h2>
+    <table>
+      <tr><th>Donnée</th><th>Pourquoi</th></tr>
+      <tr><td>Identifiant de membre Whop</td><td>Vérifier ton abonnement et gérer ton quota de scans.</td></tr>
+      <tr><td>Image de graphique que tu téléverses</td><td>Transmise au fournisseur d'IA pour l'analyse. <strong>Elle n'est pas conservée</strong> sur nos serveurs après le traitement.</td></tr>
+      <tr><td>Résultat du scan (symbole, direction, niveaux, raisonnement, mode)</td><td>T'afficher le résultat, tenir ton historique et améliorer l'outil.</td></tr>
+      <tr><td>Solde de compte et % de risque (si tu les saisis)</td><td>Calculer une taille de position indicative. Enregistrés avec le scan.</td></tr>
+      <tr><td>Adresse IP, type de navigateur, pays approximatif, pages consultées</td><td>Sécurité (limitation de débit, prévention des abus) et statistiques d'utilisation agrégées.</td></tr>
+      <tr><td>Ordres de démonstration / d'exécution (si tu utilises cette fonction)</td><td>Acheminer l'ordre vers ta plateforme et en suivre le statut.</td></tr>
+    </table>
+
+    <h2>Stockage local (navigateur)</h2>
+    <p>
+      L'outil enregistre dans le <code>localStorage</code> de ton navigateur : ton identifiant Whop,
+      tes préférences (solde, risque, plateforme) et un identifiant de visite anonyme. Ce ne sont pas
+      des témoins publicitaires et rien n'est partagé avec des tiers à des fins de suivi. Tu peux les
+      effacer en vidant les données du site.
+    </p>
+
+    <h2>Tiers avec qui les données transitent</h2>
+    <ul>
+      <li><strong>Anthropic</strong> — analyse IA de l'image (l'image et un prompt sont envoyés, non conservés par nous).</li>
+      <li><strong>Supabase</strong> — base de données (hébergement au Canada, région <code>ca-central-1</code>).</li>
+      <li><strong>Railway</strong> — hébergement de l'application.</li>
+      <li><strong>Twelve Data / Yahoo Finance</strong> — données de marché (aucune donnée personnelle envoyée).</li>
+      <li><strong>Whop</strong> — gestion de l'abonnement et du paiement.</li>
+    </ul>
+    <p>Nous ne vendons ni ne louons tes renseignements personnels.</p>
+
+    <h2>Conservation</h2>
+    <p>
+      L'historique des scans et les statistiques d'usage sont conservés tant que ton compte est actif
+      ou le temps nécessaire aux fins décrites ci-dessus. Tu peux demander la suppression en tout temps.
+    </p>
+
+    <h2>Tes droits</h2>
+    <p>
+      Tu peux demander l'accès à tes renseignements, leur correction ou leur suppression, et retirer
+      ton consentement. Écris-nous à <a href="mailto:infojobjimmy@gmail.com">infojobjimmy@gmail.com</a>
+      ou via ton espace Whop. Nous répondons dans un délai de 30 jours.
+    </p>
+
+    <h2>Sécurité</h2>
+    <p>
+      Les échanges se font en HTTPS. L'accès à la base de données est restreint côté serveur.
+      Aucun système n'est infaillible : ne téléverse pas d'informations sensibles inutiles dans tes captures.
+    </p>
+
+    <h2>Mineurs</h2>
+    <p>L'outil s'adresse aux personnes de 18 ans et plus.</p>
+
+    <h2>Modifications</h2>
+    <p>Toute modification importante sera indiquée sur cette page avec une nouvelle date de mise à jour.</p>
+
+    <a class="back" href="/">← Retour à l'outil</a>
+  </div>
+</body>
+</html>
