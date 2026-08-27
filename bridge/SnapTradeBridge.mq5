@@ -19,7 +19,6 @@
 //+------------------------------------------------------------------+
 #property copyright "SnapTrade AI"
 #property version   "1.00"
-#property strict
 
 #include <Trade/Trade.mqh>
 
@@ -64,10 +63,11 @@ datetime g_dayStamp   = 0;
 struct Managed
 {
    string   ref;
-   ulong    ticket;
+   ulong    ticket;     // 0 = ordre limite posé, pas encore rempli
    int      dir;        // +1 buy, -1 sell
    double   entry, sl, tp1, tp2, atr;
    bool     be_moved;
+   datetime since;
 };
 Managed  g_pos[];
 
@@ -101,12 +101,13 @@ void OnDeinit(const int reason) { EventKillTimer(); }
 void OnTimer()
 {
    ResetDayAnchor();
+   ManageAll();                                     // BE + trailing d'abord (le plus urgent)
    if(TimeCurrent() - g_lastBeat >= 15) { SendHeartbeat(); g_lastBeat = TimeCurrent(); }
    if(TimeCurrent() - g_lastPoll >= PollSeconds) { PollPending(); g_lastPoll = TimeCurrent(); }
-   ManageAll();
 }
 
-void OnTick() { ManageAll(); }
+// Gestion pilotée par le timer (PollSeconds). Pas de WebRequest dans OnTick :
+// WebRequest est bloquant et gèlerait l'EA à chaque tick.
 
 //+------------------------------------------------------------------+
 //| HTTP helpers                                                      |
@@ -114,7 +115,11 @@ void OnTick() { ManageAll(); }
 bool HttpJson(const string method, const string url, const string body, string &out)
 {
    char post[]; char result[]; string rh;
-   if(StringLen(body) > 0) StringToCharArray(body, post, 0, StringLen(body), CP_UTF8);
+   if(StringLen(body) > 0)
+   {
+      int len = StringToCharArray(body, post, 0, WHOLE_ARRAY, CP_UTF8);
+      if(len > 0) ArrayResize(post, len - 1); // enlève le \0 final
+   }
    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + BridgeToken + "\r\n";
    ResetLastError();
    int code = WebRequest(method, url, headers, 8000, post, result, rh);
@@ -196,11 +201,14 @@ string BrokerSymbol(const string sig)
 {
    if(SymbolOverride != "") return(SymbolOverride);
    string s = sig;
-   if(SymbolSelect(s, true)) return(s);
+   if(SymbolSelect(s, true))                          return(s);
    if(SymbolSuffix != "" && SymbolSelect(s + SymbolSuffix, true)) return(s + SymbolSuffix);
-   // essais courants
-   string alt[] = {"XAUUSD", "GOLD", "XAUUSD.", "US30", "USTEC", "NAS100"};
-   if(SymbolSelect(s, true)) return(s);
+   // gold seulement : XAUUSD ↔ GOLD selon le courtier
+   if((s == "XAUUSD" || s == "GOLD"))
+   {
+      if(SymbolSelect("XAUUSD", true)) return("XAUUSD");
+      if(SymbolSelect("GOLD", true))   return("GOLD");
+   }
    return(s); // laissera OrderSend échouer proprement si introuvable
 }
 
@@ -261,18 +269,28 @@ void SendHeartbeat()
    string atype = (m == ACCOUNT_TRADE_MODE_REAL) ? "real" : (m == ACCOUNT_TRADE_MODE_CONTEST ? "contest" : "demo");
    string body = StringFormat(
       "{\"account_id\":\"%I64d\",\"label\":\"%s\",\"account_type\":\"%s\",\"balance\":%.2f,\"equity\":%.2f,\"open_positions\":%d,\"terminal_build\":%d}",
-      AccountInfoInteger(ACCOUNT_LOGIN), AccountLabel, atype,
+      (long)AccountInfoInteger(ACCOUNT_LOGIN), AccountLabel, atype,
       AccountInfoDouble(ACCOUNT_BALANCE), AccountInfoDouble(ACCOUNT_EQUITY),
-      CountOurPositions(), TerminalInfoInteger(TERMINAL_BUILD));
+      CountOurPositions(), (int)TerminalInfoInteger(TERMINAL_BUILD));
    string out;
    if(HttpJson("POST", ApiBase + "/api/bridge/heartbeat", body, out))
       g_killSwitch = JGetBool(out, "kill_switch");
 }
 
+string JsonEsc(const string s)
+{
+   string r = s;
+   StringReplace(r, "\\", "\\\\");
+   StringReplace(r, "\"", "'");
+   StringReplace(r, "\n", " ");
+   StringReplace(r, "\r", " ");
+   return(r);
+}
+
 void Report(const string ref, const string event, ulong ticket, double price, double pnl, const string msg)
 {
    string body = StringFormat("{\"ref\":\"%s\",\"event\":\"%s\",\"mt5_ticket\":%I64u,\"price\":%.5f,\"pnl\":%.2f,\"message\":\"%s\"}",
-                              ref, event, ticket, price, pnl, msg);
+                              ref, event, ticket, price, pnl, JsonEsc(msg));
    string out;
    HttpJson("POST", ApiBase + "/api/bridge/report", body, out);
 }
@@ -281,7 +299,7 @@ void Report(const string ref, const string event, ulong ticket, double price, do
 void PollPending()
 {
    if(!g_liveOk) return;
-   string url = StringFormat("%s/api/bridge/pending?account_id=%I64d", ApiBase, AccountInfoInteger(ACCOUNT_LOGIN));
+   string url = StringFormat("%s/api/bridge/pending?account_id=%I64d", ApiBase, (long)AccountInfoInteger(ACCOUNT_LOGIN));
    string out;
    if(!HttpJson("GET", url, "", out)) return;
 
@@ -315,7 +333,6 @@ void ProcessOrder(const string o)
    if(spread > MaxSpreadPoints)           { Report(ref, "rejected", 0, 0, 0, StringFormat("Spread %d > max %d", (int)spread, MaxSpreadPoints)); return; }
 
    int d = (dir == "buy") ? 1 : -1;
-   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
    double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
    double bid = SymbolInfoDouble(sym, SYMBOL_BID);
    double px  = (d > 0) ? ask : bid;
@@ -349,33 +366,41 @@ void ProcessOrder(const string o)
 
    if(market)
    {
-      ulong ticket = trade.ResultOrder();
-      // retrouver la position ouverte
+      // position id : via le deal résultant, sinon par le commentaire
       ulong posTicket = 0;
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      ulong deal = trade.ResultDeal();
+      if(deal > 0 && HistoryDealSelect(deal))
+         posTicket = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      if(posTicket == 0)
       {
-         ulong t = PositionGetTicket(i);
-         if(PositionSelectByTicket(t) && PositionGetString(POSITION_COMMENT) == ref) { posTicket = t; break; }
+         for(int i = PositionsTotal() - 1; i >= 0; i--)
+         {
+            ulong t = PositionGetTicket(i);
+            if(PositionSelectByTicket(t) && PositionGetString(POSITION_COMMENT) == ref) { posTicket = t; break; }
+         }
       }
-      double fill = trade.ResultPrice();
-      Report(ref, "filled", posTicket, fill, 0, market ? "Marché" : "Limite");
+      Report(ref, "filled", posTicket, trade.ResultPrice(), 0, "Marché");
       Track(ref, posTicket, d, entry, sl, tp1, tp2, atr);
    }
    else
    {
       Report(ref, "filled", trade.ResultOrder(), entry, 0, "Ordre limite posé");
-      // sera suivi quand il se transforme en position (via RebuildFromOpenPositions au tick)
+      Track(ref, 0, d, entry, sl, tp1, tp2, atr); // ticket lié quand la limite se remplit
    }
 }
 
 //+------------------------------------------------------------------+
+// ticket == 0 autorisé : la ligne sera liée à la vraie position plus tard.
+// Si le ref existe déjà, on met seulement à jour le ticket (limite remplie).
 void Track(const string ref, ulong ticket, int d, double entry, double sl, double tp1, double tp2, double atr)
 {
-   for(int i = 0; i < ArraySize(g_pos); i++) if(g_pos[i].ref == ref) return;
+   for(int i = 0; i < ArraySize(g_pos); i++)
+      if(g_pos[i].ref == ref) { if(ticket != 0) g_pos[i].ticket = ticket; return; }
    int n = ArraySize(g_pos); ArrayResize(g_pos, n + 1);
    g_pos[n].ref = ref; g_pos[n].ticket = ticket; g_pos[n].dir = d;
    g_pos[n].entry = entry; g_pos[n].sl = sl; g_pos[n].tp1 = tp1; g_pos[n].tp2 = tp2; g_pos[n].atr = atr;
    g_pos[n].be_moved = false;
+   g_pos[n].since = TimeCurrent();
 }
 
 void RebuildFromOpenPositions()
@@ -388,12 +413,13 @@ void RebuildFromOpenPositions()
       string ref = PositionGetString(POSITION_COMMENT);
       if(ref == "") continue;
       bool known = false;
-      for(int k = 0; k < ArraySize(g_pos); k++) if(g_pos[k].ref == ref) { known = true; break; }
+      for(int k = 0; k < ArraySize(g_pos); k++)
+         if(g_pos[k].ref == ref) { if(g_pos[k].ticket != t) g_pos[k].ticket = t; known = true; break; }
       if(known) continue;
       int d = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
       double entry = PositionGetDouble(POSITION_PRICE_OPEN);
       double sl = PositionGetDouble(POSITION_SL);
-      // TP1/TP2/ATR inconnus après redémarrage : on repart de la position telle quelle,
+      // Cas redémarrage EA : TP1/TP2/ATR perdus → on repart de la position telle quelle,
       // be_moved déduit si le SL est déjà au niveau de l'entrée
       Track(ref, t, d, entry, sl, 0, 0, 0);
       int idx = ArraySize(g_pos) - 1;
@@ -407,6 +433,16 @@ void ManageAll()
    RebuildFromOpenPositions();
    for(int i = ArraySize(g_pos) - 1; i >= 0; i--)
    {
+      // Ordre limite pas encore rempli : rien à gérer. On purge s'il a expiré.
+      if(g_pos[i].ticket == 0)
+      {
+         if(TimeCurrent() - g_pos[i].since > (PendingExpiryMin + 5) * 60)
+         {
+            Report(g_pos[i].ref, "expired", 0, 0, 0, "Ordre limite expiré sans remplissage");
+            ArrayRemove(g_pos, i, 1);
+         }
+         continue;
+      }
       if(!PositionSelectByTicket(g_pos[i].ticket))
       {
          // position fermée → rapporter avec P&L depuis l'historique
