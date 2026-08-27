@@ -17,6 +17,23 @@ const paperOrders = [];
 const PAPER_ORDER_LIMIT = 250;
 const PAPER_PLATFORMS = new Set(['snaptrade-paper', 'mt5-demo', 'ctrader-demo']);
 
+// Plateformes routées vers le pont EA MT5 (exécution réelle sur un terminal)
+const BRIDGE_PLATFORMS = new Set(['mt5-demo', 'mt5-live']);
+
+// Règles de gestion de position appliquées par l'EA. Snapshot copié dans
+// chaque ordre pour que l'EA sache quoi faire même si on change ça plus tard.
+const ORDER_RULES = {
+  position_count:       1,          // une seule position par signal
+  entry_tolerance_r:    0.25,       // marché si le prix est à < 25 % de la distance entry↔SL, sinon ordre limite
+  pending_expiry_min:   60,
+  be_at_tp1:            true,       // SL remonte au break-even quand le prix touche TP1
+  be_buffer_points:     2,          // + quelques points au-delà de l'entry (spread/commission)
+  trailing:             true,       // après le BE, le SL suit le prix
+  trail_atr_mult:       1.5,        // distance de trailing = 1.5 × ATR (sinon = distance TP1 si ATR absent)
+  trail_min_step_points: 5,
+  hard_tp:              'tp2',      // plafond : TP posé à TP2, le trailing travaille en dessous
+};
+
 // Trust Railway's reverse proxy so req.ip reflects the real client IP
 app.set('trust proxy', 1);
 
@@ -32,6 +49,47 @@ const supabase = (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_
   : null;
 
 if (!supabase) console.warn('[supabase] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — scan history disabled');
+
+// ─────────────────────────────────────────────────────────────
+// Telemetry helpers — events log + live presence
+// Toutes les écritures sont fire-and-forget : jamais bloquantes.
+// ─────────────────────────────────────────────────────────────
+
+function clientMeta(req) {
+  const fwd = (req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const ip  = fwd || req.ip || req.socket?.remoteAddress || null;
+  const rawCountry = req.headers['cf-ipcountry']
+                  || req.headers['x-vercel-ip-country']
+                  || req.headers['x-geo-country']
+                  || null;
+  const country = rawCountry && !['XX', 'T1'].includes(rawCountry) ? rawCountry : null;
+  const ua = (req.headers['user-agent'] || '').slice(0, 400) || null;
+  return { ip, country, ua };
+}
+
+// Même métadonnées, mais nommées comme les colonnes de la table `scans`
+function clientMetaCols(req) {
+  const { ip, country, ua } = clientMeta(req);
+  return { ip, country, user_agent: ua };
+}
+
+function logEvent(type, req, extra = {}) {
+  if (!supabase) return;
+  const { ip, country, ua } = clientMeta(req);
+  supabase.from('events').insert({
+    type,
+    whop_user_id: extra.whop_user_id || req.whopUserId || (req.body && req.body.whop_user_id) || null,
+    whop_plan:    extra.whop_plan   || req.whopPlan   || null,
+    ip,
+    country,
+    user_agent: ua,
+    path: extra.path || req.originalUrl || null,
+    meta: extra.meta || null,
+  }).then(
+    ({ error }) => { if (error) console.error('[events] insert error:', error.message); },
+    (err)       => console.error('[events] exception:', err.message)
+  );
+}
 
 // Whop plan IDs — map plan_xxx → tier name (4 plans under 1 SnapTrade AI product)
 const WHOP_PLANS = {
@@ -459,26 +517,12 @@ function validatePaperOrder(body) {
 // Supabase helpers
 // ─────────────────────────────────────────────────────────────
 
-async function saveScan(whopUserId, signal, activeMode, dataSource, sizing) {
+async function saveScan(row) {
   if (!supabase) return;
   try {
-    const { error } = await supabase.from('scans').insert({
-      whop_user_id: whopUserId || null,
-      symbol_guess: signal.symbol_guess,
-      direction:    signal.direction,
-      confidence:   signal.confidence,
-      entry:        signal.entry,
-      tp1:          signal.tp1,
-      tp2:          signal.tp2,
-      sl:           signal.sl,
-      rr_ratio:     signal.rr_ratio,
-      mode:         activeMode,
-      data_source:  dataSource,
-      lot_size:     sizing ? sizing.lot_size : null,
-      reasoning:    signal.reasoning,
-    });
+    const { error } = await supabase.from('scans').insert(row);
     if (error) console.error('[supabase] Insert scan error:', error.message);
-    else       console.log('[supabase] Scan saved for user:', whopUserId || 'anonymous');
+    else       console.log('[supabase] Scan saved for user:', row.whop_user_id || 'anonymous');
   } catch (err) {
     console.error('[supabase] saveScan exception:', err.message);
   }
@@ -603,12 +647,14 @@ async function whopGating(req, res, next) {
   const whopUserId = (req.body?.whop_user_id || '').toString().trim();
 
   if (!whopUserId) {
+    logEvent('auth_fail', req, { meta: { reason: 'missing_whop_id' } });
     return res.status(401).json({ error: 'ID membre Whop requis. Entre ton ID dans le champ en haut du formulaire.' });
   }
 
   const plan = await getWhopPlan(whopUserId);
 
   if (plan === null) {
+    logEvent('auth_fail', req, { whop_user_id: whopUserId, meta: { reason: 'no_active_sub' } });
     return res.status(403).json({
       error: `Aucun abonnement SnapTrade AI actif trouvé. Obtiens l'accès sur ${WHOP_UPGRADE_URL}`,
     });
@@ -617,6 +663,7 @@ async function whopGating(req, res, next) {
   const quota = await checkAndIncrementQuota(whopUserId, plan);
 
   if (!quota.allowed) {
+    logEvent('quota_block', req, { whop_user_id: whopUserId, whop_plan: plan, meta: { reason: quota.reason } });
     const msgs = {
       quota_essai:    `Tu as utilisé tes 5 scans gratuits à vie. Passe au plan Standard (14.99$/mois) → ${WHOP_UPGRADE_URL}`,
       quota_standard: `Tu as atteint ta limite de 300 scans ce mois-ci. Passe au plan Pro (24.99$/mois) → ${WHOP_UPGRADE_URL}`,
@@ -646,7 +693,7 @@ const hourlyLimiter = rateLimit({
   limit: 20,
   standardHeaders: 'draft-6', // ajoute RateLimit-Limit / RateLimit-Remaining / RateLimit-Reset
   legacyHeaders: false,
-  handler: (_req, res) => res.status(429).json(RATE_LIMIT_MSG),
+  handler: (req, res) => { logEvent('rate_limit', req, { meta: { limiter: 'hourly' } }); res.status(429).json(RATE_LIMIT_MSG); },
 });
 
 // 5 scans / 10 min par IP — protège contre le spam en rafale
@@ -655,7 +702,7 @@ const burstLimiter = rateLimit({
   limit: 5,
   standardHeaders: 'draft-6',
   legacyHeaders: false,
-  handler: (_req, res) => res.status(429).json(RATE_LIMIT_MSG),
+  handler: (req, res) => { logEvent('rate_limit', req, { meta: { limiter: 'burst' } }); res.status(429).json(RATE_LIMIT_MSG); },
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -688,6 +735,7 @@ app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, whopGating, async (r
     const imageSizeKB  = Math.round(image_base64.length * 0.75 / 1024);
 
     console.log(`[analyze] START — ${imageSizeKB}KB, mode=${activeMode}`);
+    logEvent('analyze_start', req, { meta: { mode: activeMode, image_kb: imageSizeKB, symbol_override: (symbol_override || '').toString().trim() || null } });
 
     // ── Pass 1: Vision analysis ──────────────────────────────
     const pass1Msg = await client.messages.create(
@@ -770,10 +818,41 @@ app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, whopGating, async (r
     const bestSymbol = finalSignal.symbol_guess || marketSym || rawSymbol || null;
     const sizing = calculateLotSize(accountBalance, riskPercent, finalSignal.entry, finalSignal.sl, bestSymbol);
 
+    const latencyMs = Date.now() - handlerStart;
     console.log(`[analyze] DONE — ${elapsed()}, data_source=${dataSource}`);
 
     // Fire-and-forget — never block the response on DB write
-    saveScan(req.whopUserId || req.body.whop_user_id, finalSignal, activeMode, dataSource, sizing);
+    const whopUserId = req.whopUserId || req.body.whop_user_id || null;
+    saveScan({
+      whop_user_id:     whopUserId,
+      whop_plan:        req.whopPlan || null,
+      symbol_guess:     finalSignal.symbol_guess,
+      symbol_override:  (symbol_override || '').toString().trim() || null,
+      direction:        finalSignal.direction,
+      confidence:       finalSignal.confidence,
+      entry:            finalSignal.entry,
+      tp1:              finalSignal.tp1,
+      tp2:              finalSignal.tp2,
+      sl:               finalSignal.sl,
+      rr_ratio:         finalSignal.rr_ratio,
+      mode:             activeMode,
+      data_source:      dataSource,
+      lot_size:         sizing ? sizing.lot_size : null,
+      reasoning:        finalSignal.reasoning,
+      pass1_direction:  pass1Signal.direction,
+      pass1_confidence: pass1Signal.confidence,
+      indicators:       indicators,
+      account_balance:  Number.isFinite(parseFloat(accountBalance)) ? parseFloat(accountBalance) : null,
+      risk_pct:         Number.isFinite(parseFloat(riskPercent))    ? parseFloat(riskPercent)    : null,
+      image_size_kb:    imageSizeKB,
+      latency_ms:       latencyMs,
+      ...clientMetaCols(req),
+    });
+    logEvent('analyze_success', req, { whop_user_id: whopUserId, whop_plan: req.whopPlan || null, meta: {
+      mode: activeMode, data_source: dataSource, direction: finalSignal.direction,
+      confidence: finalSignal.confidence, symbol: finalSignal.symbol_guess || marketSym || rawSymbol || null,
+      latency_ms: latencyMs,
+    } });
 
     return res.json({
       ...finalSignal,
@@ -787,6 +866,7 @@ app.post('/api/analyze-chart', hourlyLimiter, burstLimiter, whopGating, async (r
 
   } catch (err) {
     console.error(`[analyze] ERROR at ${elapsed()}:`, err.name, err.message);
+    logEvent('analyze_error', req, { meta: { name: err.name, message: (err.message || '').slice(0, 300), at_ms: Date.now() - handlerStart } });
     if (res.headersSent) return;
 
     if (err.name === 'APITimeoutError' || err.name === 'AbortError' || err.code === 'ETIMEDOUT')
@@ -836,6 +916,194 @@ app.post('/api/paper-orders', (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// Exécution d'ordres — pont EA MT5
+//   POST /api/orders            (front « Accepter »)  → crée un ordre pending
+//   GET  /api/orders/:ref                             → statut pour le front
+//   POST /api/bridge/heartbeat  (EA, Bearer)          → santé du terminal
+//   GET  /api/bridge/pending    (EA, Bearer)          → réclame les ordres pending
+//   POST /api/bridge/report     (EA, Bearer)          → filled/rejected/be_moved/trailing/closed
+// ─────────────────────────────────────────────────────────────
+
+function makeRef() {
+  return 'STO-' + crypto.randomBytes(4).toString('hex').toUpperCase().slice(0, 6);
+}
+
+function requireBridge(req, res, next) {
+  const token = process.env.BRIDGE_TOKEN;
+  if (!token) return res.status(503).json({ error: 'BRIDGE_TOKEN non configuré.' });
+  const provided = (req.get('authorization') || '').replace(/^Bearer\s+/i, '') || req.get('x-bridge-token') || '';
+  if (provided !== token) return res.status(401).json({ error: 'Token pont invalide.' });
+  next();
+}
+
+function validateOrder(body) {
+  const platform   = typeof body.platform === 'string' ? body.platform.trim() : '';
+  const direction  = typeof body.direction === 'string' ? body.direction.toLowerCase() : '';
+  const symbol     = typeof body.symbol === 'string' ? body.symbol.trim().toUpperCase() : '';
+  const whopUserId = typeof body.whop_user_id === 'string' ? body.whop_user_id.trim() : '';
+  const mode       = body.mode === 'scalp' ? 'scalp' : (body.mode === 'swing' ? 'swing' : null);
+  const num = k => Number(body[k]);
+  const entry = num('entry'), tp1 = num('tp1'), tp2 = num('tp2'), sl = num('sl'), lot = num('lot_size');
+  const atr = Number.isFinite(num('atr')) && num('atr') > 0 ? num('atr') : null;
+
+  if (!whopUserId) throw new Error('ID membre Whop requis.');
+  const ALL_PLATFORMS = new Set([...PAPER_PLATFORMS, ...BRIDGE_PLATFORMS]);
+  if (!ALL_PLATFORMS.has(platform)) throw new Error('Plateforme invalide.');
+  if (!['buy', 'sell'].includes(direction)) throw new Error('Direction invalide.');
+  if (!symbol || symbol.length > 30 || !/^[A-Z0-9/_.=-]+$/.test(symbol)) throw new Error('Symbole invalide.');
+  if ([entry, tp1, tp2, sl, lot].some(v => !Number.isFinite(v) || v <= 0))
+    throw new Error('Entry, TP1, TP2, SL et lot doivent être des nombres positifs.');
+  if (lot > 100) throw new Error('Lot trop élevé.');
+
+  const levelsOk = direction === 'buy'
+    ? sl < entry && tp1 > entry && tp2 >= tp1
+    : sl > entry && tp1 < entry && tp2 <= tp1;
+  if (!levelsOk) throw new Error('Les niveaux Entry/TP/SL ne correspondent pas à la direction.');
+
+  return { platform, direction, symbol, whopUserId, mode, entry, tp1, tp2, sl, lot, atr,
+           accountId: typeof body.account_id === 'string' ? body.account_id.trim() || null : null };
+}
+
+app.post('/api/orders', async (req, res) => {
+  let d;
+  try { d = validateOrder(req.body || {}); }
+  catch (err) { return res.status(400).json({ error: err.message }); }
+
+  // Le réel n'est ouvert qu'avec le token admin ET un compte explicitement autorisé
+  if (d.platform === 'mt5-live') {
+    const adminOk = (req.get('x-admin-token') || '') === process.env.ADMIN_TOKEN && !!process.env.ADMIN_TOKEN;
+    if (!adminOk) return res.status(403).json({ error: 'Exécution réelle réservée à l’administrateur.' });
+  }
+
+  if (!supabase) return res.status(503).json({ error: 'Base de données indisponible.' });
+
+  const ref = makeRef();
+  const { ip, country } = clientMeta(req);
+  const paperInstant = (d.platform === 'snaptrade-paper' || d.platform === 'ctrader-demo');
+
+  const row = {
+    ref, whop_user_id: d.whopUserId, account_id: d.accountId, platform: d.platform,
+    mode: d.mode, symbol: d.symbol, direction: d.direction, lot: d.lot,
+    entry: d.entry, sl: d.sl, tp1: d.tp1, tp2: d.tp2, atr: d.atr,
+    manage: ORDER_RULES,
+    status: paperInstant ? 'filled' : 'pending',
+    fill_price: paperInstant ? d.entry : null,
+    filled_at:  paperInstant ? new Date().toISOString() : null,
+    bridge_msg: paperInstant ? 'Simulation interne — aucun terminal impliqué.' : null,
+    ip, country,
+  };
+
+  const { data, error } = await supabase.from('orders').insert(row).select('ref,status').single();
+  if (error) { console.error('[orders] insert error:', error.message); return res.status(500).json({ error: error.message }); }
+
+  logEvent('order_created', req, { whop_user_id: d.whopUserId, meta: { ref, platform: d.platform, symbol: d.symbol, direction: d.direction } });
+  console.log(`[orders] ${ref} ${d.direction.toUpperCase()} ${d.symbol} ${d.lot} — ${d.platform} (${row.status})`);
+  return res.status(201).json({ ref, status: row.status, routed_to_bridge: BRIDGE_PLATFORMS.has(d.platform) });
+});
+
+app.get('/api/orders/:ref', async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'Base de données indisponible.' });
+  const { data, error } = await supabase.from('orders')
+    .select('ref,status,platform,symbol,direction,lot,entry,sl,tp1,tp2,mt5_ticket,fill_price,close_price,pnl,be_moved,trail_active,bridge_msg,created_at,filled_at,closed_at')
+    .eq('ref', req.params.ref).single();
+  if (error) return res.status(404).json({ error: 'Ordre introuvable.' });
+  return res.json(data);
+});
+
+app.post('/api/bridge/heartbeat', requireBridge, async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'DB indisponible.' });
+  const b = req.body || {};
+  const accountId = (b.account_id || '').toString().trim();
+  if (!accountId) return res.status(400).json({ error: 'account_id requis.' });
+
+  const patch = {
+    account_id: accountId,
+    label:          b.label ? String(b.label).slice(0, 60) : null,
+    whop_user_id:   b.whop_user_id ? String(b.whop_user_id).trim() : null,
+    account_type:   ['demo', 'contest', 'real'].includes(b.account_type) ? b.account_type : null,
+    balance:        Number.isFinite(Number(b.balance)) ? Number(b.balance) : null,
+    equity:         Number.isFinite(Number(b.equity)) ? Number(b.equity) : null,
+    open_positions: Number.isInteger(b.open_positions) ? b.open_positions : null,
+    terminal_build: Number.isInteger(b.terminal_build) ? b.terminal_build : null,
+    last_seen:      new Date().toISOString(),
+  };
+  Object.keys(patch).forEach(k => patch[k] == null && k !== 'account_id' && delete patch[k]);
+
+  const { error } = await supabase.from('bridge_accounts').upsert(patch, { onConflict: 'account_id' });
+  if (error) console.error('[bridge] heartbeat error:', error.message);
+
+  const { data: acct } = await supabase.from('bridge_accounts')
+    .select('kill_switch,live_enabled').eq('account_id', accountId).single();
+  return res.json({ ok: true, kill_switch: !!acct?.kill_switch, live_enabled: !!acct?.live_enabled, rules: ORDER_RULES });
+});
+
+app.get('/api/bridge/pending', requireBridge, async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'DB indisponible.' });
+  const accountId = (req.query.account_id || '').toString().trim();
+  if (!accountId) return res.status(400).json({ error: 'account_id requis.' });
+
+  const { data, error } = await supabase.rpc('claim_pending_orders', { p_account_id: accountId, p_limit: 5 });
+  if (error) { console.error('[bridge] claim error:', error.message); return res.status(500).json({ error: error.message }); }
+
+  const orders = (data || []).map(o => ({
+    ref: o.ref, symbol: o.symbol, direction: o.direction, lot: Number(o.lot),
+    entry: Number(o.entry), sl: Number(o.sl), tp1: Number(o.tp1), tp2: Number(o.tp2),
+    atr: o.atr != null ? Number(o.atr) : null, platform: o.platform, rules: o.manage || ORDER_RULES,
+  }));
+  if (orders.length) console.log(`[bridge] ${accountId} claimed ${orders.length} order(s): ${orders.map(o => o.ref).join(', ')}`);
+  return res.json({ orders, rules: ORDER_RULES });
+});
+
+app.post('/api/bridge/report', requireBridge, async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'DB indisponible.' });
+  const b = req.body || {};
+  const ref   = (b.ref || '').toString().trim();
+  const event = (b.event || '').toString().trim();
+  if (!ref || !['filled', 'rejected', 'be_moved', 'trailing', 'closed', 'expired', 'cancelled'].includes(event))
+    return res.status(400).json({ error: 'ref et event valides requis.' });
+
+  const now = new Date().toISOString();
+  const num = v => (Number.isFinite(Number(v)) ? Number(v) : null);
+  const patch = { updated_at: now, bridge_msg: b.message ? String(b.message).slice(0, 300) : null };
+
+  if (event === 'filled')   { patch.status = 'filled';   patch.filled_at = now; patch.mt5_ticket = Number.isInteger(b.mt5_ticket) ? b.mt5_ticket : null; patch.fill_price = num(b.price); }
+  if (event === 'rejected') { patch.status = 'rejected'; }
+  if (event === 'expired')  { patch.status = 'expired'; }
+  if (event === 'cancelled'){ patch.status = 'cancelled'; }
+  if (event === 'be_moved') { patch.be_moved = true; }
+  if (event === 'trailing') { patch.trail_active = true; }
+  if (event === 'closed')   { patch.status = 'closed'; patch.closed_at = now; patch.close_price = num(b.price); patch.pnl = num(b.pnl); }
+
+  const { error } = await supabase.from('orders').update(patch).eq('ref', ref);
+  if (error) { console.error('[bridge] report error:', error.message); return res.status(500).json({ error: error.message }); }
+
+  logEvent('order_' + event, req, { meta: { ref, ticket: b.mt5_ticket || null, pnl: b.pnl ?? null } });
+  console.log(`[bridge] ${ref} → ${event}${b.mt5_ticket ? ' #' + b.mt5_ticket : ''}${b.pnl != null ? ' pnl=' + b.pnl : ''}`);
+  return res.json({ ok: true });
+});
+
+// Admin — santé des ponts + derniers ordres + kill-switch
+app.get('/api/admin/orders', requireAdmin, async (_req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'DB indisponible.' });
+  const [accts, ords] = await Promise.all([
+    supabase.from('bridge_accounts').select('*').order('last_seen', { ascending: false }),
+    supabase.from('orders').select('*').order('created_at', { ascending: false }).limit(80),
+  ]);
+  res.set('Cache-Control', 'no-store');
+  return res.json({ accounts: accts.data || [], orders: ords.data || [] });
+});
+
+app.post('/api/admin/kill-switch', requireAdmin, async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'DB indisponible.' });
+  const { account_id, on } = req.body || {};
+  if (!account_id) return res.status(400).json({ error: 'account_id requis.' });
+  const { error } = await supabase.from('bridge_accounts')
+    .update({ kill_switch: !!on }).eq('account_id', String(account_id));
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ ok: true, account_id, kill_switch: !!on });
+});
+
 app.get('/api/quota/:whop_user_id', async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Quota non disponible.' });
   const { data, error } = await supabase
@@ -858,6 +1126,76 @@ app.get('/api/scans/:whop_user_id', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   return res.json(data);
 });
+
+// ─────────────────────────────────────────────────────────────
+// Télémétrie front — page_view + heartbeat de présence
+// ─────────────────────────────────────────────────────────────
+
+const trackLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,                      // 1 page_view + 1 heartbeat/min laisse large
+  standardHeaders: false,
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(204).end(),
+});
+
+app.post('/api/track', trackLimiter, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const t    = (body.type || '').toString().slice(0, 40);
+    if (!['page_view', 'heartbeat'].includes(t)) return res.status(204).end();
+
+    const vid        = (body.visitor_id || '').toString().slice(0, 64) || null;
+    const whopUserId = (body.whop_user_id || '').toString().trim() || null;
+    const { ip, country, ua } = clientMeta(req);
+
+    if (supabase && vid) {
+      await supabase.rpc('presence_touch', {
+        p_visitor_id: vid, p_whop_user_id: whopUserId,
+        p_ip: ip, p_country: country, p_ua: ua, p_kind: t,
+      });
+    }
+    if (t === 'page_view') {
+      logEvent('page_view', req, {
+        whop_user_id: whopUserId,
+        path: (body.path || '/').toString().slice(0, 200),
+        meta: { visitor_id: vid },
+      });
+    }
+    res.status(204).end();
+  } catch (err) {
+    console.error('[track] error:', err.message);
+    res.status(204).end();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// Dashboard admin — protégé par ADMIN_TOKEN
+// ─────────────────────────────────────────────────────────────
+
+function requireAdmin(req, res, next) {
+  const token = process.env.ADMIN_TOKEN;
+  if (!token) return res.status(503).json({ error: 'ADMIN_TOKEN non configuré sur le serveur.' });
+  const provided = req.get('x-admin-token')
+                || (req.get('authorization') || '').replace(/^Bearer\s+/i, '')
+                || req.query.token
+                || '';
+  if (provided !== token) return res.status(401).json({ error: 'Token admin invalide.' });
+  next();
+}
+
+app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'Supabase non configuré — aucune donnée.' });
+  const { data, error } = await supabase.rpc('admin_dashboard_stats');
+  if (error) {
+    console.error('[admin] stats error:', error.message);
+    return res.status(500).json({ error: error.message });
+  }
+  res.set('Cache-Control', 'no-store');
+  return res.json(data);
+});
+
+app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 
 // Global error handler — ensures body-parser errors return JSON
 app.use((err, req, res, _next) => {

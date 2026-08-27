@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>SnapTrade AI — Console Analytics</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#0B0E11; --surface:#151A21; --surface2:#1C2330; --border:#232D3B;
+      --accent:#4C8DFF; --buy:#1FC98B; --sell:#E5484D; --warn:#F5A623;
+      --text:#E8ECF0; --muted:#6B7A8D;
+      --mono:'JetBrains Mono','Courier New',monospace; --sans:'Inter',sans-serif;
+    }
+    html,body { background:var(--bg); color:var(--text); font-family:var(--sans); font-size:13px; line-height:1.5; }
+    body { padding:24px 20px 80px; max-width:1180px; margin:0 auto; }
+    a { color:var(--accent); }
+    h1 { font-size:18px; font-weight:700; letter-spacing:-.3px; }
+    h1 span { color:var(--accent); }
+    h2 { font-size:11px; text-transform:uppercase; letter-spacing:1.2px; color:var(--muted); margin:28px 0 12px; font-weight:600; }
+
+    header { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:8px; }
+    .head-right { display:flex; align-items:center; gap:14px; font-size:12px; color:var(--muted); }
+    .live-dot { width:8px; height:8px; border-radius:50%; background:var(--buy); display:inline-block; margin-right:6px; box-shadow:0 0 0 0 rgba(31,201,139,.6); animation:pulse 2s infinite; }
+    @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(31,201,139,.5);} 70%{box-shadow:0 0 0 7px rgba(31,201,139,0);} 100%{box-shadow:0 0 0 0 rgba(31,201,139,0);} }
+    .btn { background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:6px 12px; font-family:var(--sans); font-size:12px; font-weight:600; cursor:pointer; }
+    .btn:hover { border-color:var(--accent); }
+
+    /* Gate */
+    #gate { max-width:380px; margin:80px auto; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:24px; }
+    #gate p { color:var(--muted); margin:8px 0 16px; }
+    #gate input { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px 12px; color:var(--text); font-family:var(--mono); font-size:13px; outline:none; }
+    #gate input:focus { border-color:var(--accent); }
+    #gate button { width:100%; margin-top:12px; background:var(--accent); color:#fff; border:none; border-radius:6px; padding:10px; font-weight:600; font-size:13px; cursor:pointer; }
+    #gate-err { color:var(--sell); font-size:12px; margin-top:10px; display:none; }
+
+    #app { display:none; }
+    #err-banner { display:none; background:rgba(229,72,77,.1); border:1px solid rgba(229,72,77,.35); color:#f08083; padding:10px 14px; border-radius:8px; margin-bottom:12px; font-size:12px; }
+
+    .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }
+    .kpi { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px; }
+    .kpi .k-label { font-size:10px; text-transform:uppercase; letter-spacing:.8px; color:var(--muted); }
+    .kpi .k-value { font-family:var(--mono); font-size:24px; font-weight:600; margin-top:4px; }
+    .kpi .k-sub { font-size:11px; color:var(--muted); margin-top:2px; }
+    .kpi.live .k-value { color:var(--buy); }
+
+    .cols { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    @media (max-width:820px){ .cols { grid-template-columns:1fr; } }
+
+    .panel { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px 16px; }
+    .panel h3 { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:12px; font-weight:600; }
+
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    th { text-align:left; font-size:10px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); padding:6px 8px; border-bottom:1px solid var(--border); font-weight:600; }
+    td { padding:6px 8px; border-bottom:1px solid var(--border); font-family:var(--mono); }
+    tr:last-child td { border-bottom:none; }
+    .tbl-wrap { overflow-x:auto; }
+    .buy { color:var(--buy); }
+    .sell { color:var(--sell); }
+    .muted { color:var(--muted); }
+
+    /* bar chart */
+    .chart { display:flex; align-items:flex-end; gap:3px; height:120px; padding-top:8px; }
+    .chart .bar { flex:1; background:var(--accent); border-radius:2px 2px 0 0; min-height:2px; opacity:.75; position:relative; }
+    .chart .bar:hover { opacity:1; }
+    .chart .bar span { position:absolute; top:-16px; left:50%; transform:translateX(-50%); font-size:9px; color:var(--muted); font-family:var(--mono); white-space:nowrap; display:none; }
+    .chart .bar:hover span { display:block; }
+    .chart-x { display:flex; justify-content:space-between; font-size:9px; color:var(--muted); margin-top:6px; font-family:var(--mono); }
+
+    /* split bars */
+    .split { display:flex; height:26px; border-radius:5px; overflow:hidden; border:1px solid var(--border); margin-bottom:6px; }
+    .split > div { display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:600; color:#0B0E11; }
+    .split-legend { font-size:11px; color:var(--muted); display:flex; gap:14px; margin-bottom:14px; }
+
+    .pill { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; font-weight:600; }
+    .pill.swing { background:rgba(76,141,255,.15); color:var(--accent); }
+    .pill.scalp { background:rgba(123,79,240,.18); color:#A78BFA; }
+    .note { font-size:11px; color:var(--muted); margin-top:10px; line-height:1.6; }
+  </style>
+</head>
+<body>
+  <!-- Token gate -->
+  <div id="gate">
+    <h1>Snap<span>Trade</span> AI · Console</h1>
+    <p>Entre le token admin pour accéder aux analytics.</p>
+    <input id="gate-input" type="password" placeholder="ADMIN_TOKEN" autocomplete="off" spellcheck="false" />
+    <button id="gate-btn">Ouvrir la console</button>
+    <div id="gate-err"></div>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="app">
+    <header>
+      <h1>Snap<span>Trade</span> AI · Analytics</h1>
+      <div class="head-right">
+        <span id="live-label"><span class="live-dot"></span><span id="live-count">0</span> en ligne</span>
+        <span id="updated" class="muted"></span>
+        <button class="btn" id="refresh-btn">Rafraîchir</button>
+        <button class="btn" id="logout-btn">Déconnexion</button>
+      </div>
+    </header>
+
+    <div id="err-banner"></div>
+
+    <h2>Vue d'ensemble</h2>
+    <div class="kpi-grid" id="kpi-grid"></div>
+
+    <h2>Volume de scans — 30 derniers jours</h2>
+    <div class="panel">
+      <div class="chart" id="chart"></div>
+      <div class="chart-x" id="chart-x"></div>
+    </div>
+
+    <h2>Entonnoir d'usage — 7 derniers jours</h2>
+    <div class="kpi-grid" id="funnel-grid"></div>
+
+    <h2>Répartitions — 30 jours</h2>
+    <div class="cols">
+      <div class="panel">
+        <h3>Direction</h3>
+        <div class="split" id="split-dir"></div>
+        <div class="split-legend" id="legend-dir"></div>
+        <h3>Mode</h3>
+        <div class="split" id="split-mode"></div>
+        <div class="split-legend" id="legend-mode"></div>
+        <h3>Source de données</h3>
+        <div class="split" id="split-src"></div>
+        <div class="split-legend" id="legend-src"></div>
+      </div>
+      <div class="panel">
+        <h3>Confiance moyenne</h3>
+        <div class="kpi-grid" id="conf-grid"></div>
+        <h3 style="margin-top:18px;">Paliers d'abonnement</h3>
+        <div class="tbl-wrap"><table id="plan-tbl"></table></div>
+      </div>
+    </div>
+
+    <h2>Symboles &amp; patterns récurrents — 30 jours</h2>
+    <div class="cols">
+      <div class="panel">
+        <h3>Top symboles</h3>
+        <div class="tbl-wrap"><table id="sym-tbl"></table></div>
+      </div>
+      <div class="panel">
+        <h3>Setups fréquents (≥ 2 occurrences)</h3>
+        <div class="tbl-wrap"><table id="setup-tbl"></table></div>
+        <div class="note">Symbole + mode + direction + tranche de confiance. Base pour l'agent d'analyse : une fois le suivi de résultat (TP/SL touché) branché, on saura lesquels de ces setups sont gagnants.</div>
+      </div>
+    </div>
+
+    <h2>Qui est connecté (5 dernières minutes)</h2>
+    <div class="panel tbl-wrap"><table id="live-tbl"></table></div>
+
+    <h2>Derniers scans</h2>
+    <div class="panel tbl-wrap"><table id="scan-tbl"></table></div>
+
+    <h2>Dernières erreurs d'analyse</h2>
+    <div class="panel tbl-wrap"><table id="errs-tbl"></table></div>
+
+    <h2>Ponts MT5 connectés</h2>
+    <div class="panel tbl-wrap"><table id="bridge-tbl"></table></div>
+
+    <h2>Ordres exécutés</h2>
+    <div class="panel tbl-wrap"><table id="orders-tbl"></table></div>
+  </div>
+
+  <script>
+    const TOKEN_KEY = 'st_admin_token';
+    const gate   = document.getElementById('gate');
+    const app    = document.getElementById('app');
+    const gInput = document.getElementById('gate-input');
+    const gBtn   = document.getElementById('gate-btn');
+    const gErr   = document.getElementById('gate-err');
+    let timer = null;
+
+    function token() { return localStorage.getItem(TOKEN_KEY) || ''; }
+
+    async function fetchStats() {
+      const r = await fetch('/api/admin/stats', { headers: { 'x-admin-token': token() } });
+      if (r.status === 401) { throw new Error('unauthorized'); }
+      if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || ('HTTP ' + r.status)); }
+      return r.json();
+    }
+
+    gBtn.addEventListener('click', async () => {
+      const t = gInput.value.trim();
+      if (!t) return;
+      localStorage.setItem(TOKEN_KEY, t);
+      gErr.style.display = 'none';
+      try { const d = await fetchStats(); enterApp(); render(d); }
+      catch (e) {
+        localStorage.removeItem(TOKEN_KEY);
+        gErr.textContent = e.message === 'unauthorized' ? 'Token invalide.' : ('Erreur : ' + e.message);
+        gErr.style.display = 'block';
+      }
+    });
+    gInput.addEventListener('keydown', e => { if (e.key === 'Enter') gBtn.click(); });
+
+    document.getElementById('logout-btn').addEventListener('click', () => {
+      localStorage.removeItem(TOKEN_KEY);
+      if (timer) clearInterval(timer);
+      location.reload();
+    });
+    document.getElementById('refresh-btn').addEventListener('click', load);
+
+    function enterApp() { gate.style.display = 'none'; app.style.display = 'block'; }
+
+    async function load() {
+      const banner = document.getElementById('err-banner');
+      try {
+        const d = await fetchStats();
+        banner.style.display = 'none';
+        render(d);
+      } catch (e) {
+        if (e.message === 'unauthorized') { localStorage.removeItem(TOKEN_KEY); location.reload(); return; }
+        banner.textContent = 'Impossible de charger : ' + e.message;
+        banner.style.display = 'block';
+      }
+      loadOrders();
+    }
+
+    async function loadOrders() {
+      try {
+        const r = await fetch('/api/admin/orders', { headers: { 'x-admin-token': token() } });
+        if (!r.ok) return;
+        const d = await r.json();
+        document.getElementById('bridge-tbl').innerHTML =
+          '<tr><th>Compte</th><th>Label</th><th>Type</th><th>Réel</th><th>Kill</th><th>Balance</th><th>Équité</th><th>Pos.</th><th>Vu il y a</th></tr>' +
+          ((d.accounts || []).map(a =>
+            `<tr><td>${esc(a.account_id)}</td><td>${esc(a.label || '—')}</td><td>${esc(a.account_type || '—')}</td>
+             <td class="${a.live_enabled ? 'sell' : 'muted'}">${a.live_enabled ? 'OUI' : 'non'}</td>
+             <td class="${a.kill_switch ? 'sell' : 'muted'}">${a.kill_switch ? 'ON' : 'off'}</td>
+             <td>${a.balance == null ? '—' : Number(a.balance).toFixed(2)}</td>
+             <td>${a.equity == null ? '—' : Number(a.equity).toFixed(2)}</td>
+             <td>${n(a.open_positions)}</td><td>${ago(a.last_seen)}</td></tr>`).join('')
+            || '<tr><td colspan="9" class="muted">Aucun pont connecté</td></tr>');
+
+        document.getElementById('orders-tbl').innerHTML =
+          '<tr><th>Heure</th><th>Réf</th><th>Membre</th><th>Plateforme</th><th>Symbole</th><th>Dir</th><th>Lot</th><th>Statut</th><th>Ticket</th><th>BE</th><th>Trail</th><th>P&L</th></tr>' +
+          ((d.orders || []).map(o =>
+            `<tr><td>${new Date(o.created_at).toLocaleString('fr-CA', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })}</td>
+             <td>${esc(o.ref)}</td><td>${esc(shortId(o.whop_user_id))}</td><td>${esc(o.platform)}</td>
+             <td>${esc(o.symbol)}</td><td class="${o.direction}">${esc(String(o.direction).toUpperCase())}</td>
+             <td>${o.lot}</td>
+             <td class="${['rejected','expired','cancelled'].includes(o.status) ? 'sell' : (o.status === 'filled' || o.status === 'closed' ? 'buy' : 'muted')}">${esc(o.status)}</td>
+             <td class="muted">${o.mt5_ticket || '—'}</td>
+             <td class="muted">${o.be_moved ? '✓' : '—'}</td><td class="muted">${o.trail_active ? '✓' : '—'}</td>
+             <td class="${Number(o.pnl || 0) >= 0 ? 'buy' : 'sell'}">${o.pnl == null ? '—' : Number(o.pnl).toFixed(2)}</td></tr>`).join('')
+            || '<tr><td colspan="12" class="muted">Aucun ordre</td></tr>');
+      } catch (_) {}
+    }
+
+    // ── Rendu ──────────────────────────────────────────────
+    const n = v => (v == null ? '0' : String(v));
+    const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+    const shortId = s => !s ? '—' : (s.length > 16 ? s.slice(0, 14) + '…' : s);
+    const ago = ts => {
+      if (!ts) return '—';
+      const s = Math.round((Date.now() - new Date(ts).getTime()) / 1000);
+      if (s < 60) return s + 's';
+      if (s < 3600) return Math.round(s / 60) + 'min';
+      if (s < 86400) return Math.round(s / 3600) + 'h';
+      return Math.round(s / 86400) + 'j';
+    };
+
+    function kpi(label, value, sub, cls) {
+      return `<div class="kpi ${cls || ''}"><div class="k-label">${label}</div>
+        <div class="k-value">${value}</div>${sub ? `<div class="k-sub">${sub}</div>` : ''}</div>`;
+    }
+
+    function splitBar(elId, legendId, parts) {
+      const total = parts.reduce((a, p) => a + p.v, 0) || 1;
+      document.getElementById(elId).innerHTML = parts.map(p =>
+        `<div style="width:${(p.v / total * 100).toFixed(1)}%;background:${p.color}">${p.v ? p.v : ''}</div>`).join('');
+      document.getElementById(legendId).innerHTML = parts.map(p =>
+        `<span><span style="color:${p.color}">■</span> ${p.label} ${(p.v / total * 100).toFixed(0)}%</span>`).join('');
+    }
+
+    function render(d) {
+      document.getElementById('live-count').textContent = n(d.live_now);
+      document.getElementById('updated').textContent = 'màj ' + new Date(d.generated_at).toLocaleTimeString('fr-CA');
+
+      document.getElementById('kpi-grid').innerHTML =
+        kpi('En ligne', n(d.live_now), 'temps réel', 'live') +
+        kpi('Scans aujourd\'hui', n(d.scans_today), n(d.users_today) + ' utilisateurs') +
+        kpi('Scans 7 j', n(d.scans_7d), n(d.users_7d) + ' utilisateurs') +
+        kpi('Scans 30 j', n(d.scans_30d), n(d.users_30d) + ' utilisateurs') +
+        kpi('Scans total', n(d.scans_total)) +
+        kpi('Membres', n(d.total_members), 'table user_quotas');
+
+      // chart
+      const days = d.scans_per_day || [];
+      const max = Math.max(1, ...days.map(x => x.count));
+      document.getElementById('chart').innerHTML = days.map(x =>
+        `<div class="bar" style="height:${(x.count / max * 100).toFixed(1)}%"><span>${x.day.slice(5)} · ${x.count}</span></div>`).join('')
+        || '<div class="muted">Aucune donnée</div>';
+      document.getElementById('chart-x').innerHTML = days.length
+        ? `<span>${days[0].day.slice(5)}</span><span>${days[days.length - 1].day.slice(5)}</span>` : '';
+
+      // funnel
+      const f = d.funnel_7d || {};
+      document.getElementById('funnel-grid').innerHTML =
+        kpi('Vues de page', n(f.page_view)) +
+        kpi('Analyses lancées', n(f.analyze_start)) +
+        kpi('Analyses réussies', n(f.analyze_success)) +
+        kpi('Erreurs', n(f.analyze_error)) +
+        kpi('Blocs quota', n(f.quota_block)) +
+        kpi('Échecs accès', n(f.auth_fail)) +
+        kpi('Rate-limit', n(f.rate_limit));
+
+      // splits
+      const dir = d.direction_split_30d || {}, mode = d.mode_split_30d || {}, src = d.data_source_split_30d || {};
+      splitBar('split-dir', 'legend-dir', [
+        { label: 'BUY', v: dir.buy || 0, color: '#1FC98B' },
+        { label: 'SELL', v: dir.sell || 0, color: '#E5484D' }]);
+      splitBar('split-mode', 'legend-mode', [
+        { label: 'Swing', v: mode.swing || 0, color: '#4C8DFF' },
+        { label: 'Scalp', v: mode.scalp || 0, color: '#7B4FF0' }]);
+      splitBar('split-src', 'legend-src', [
+        { label: 'Données réelles', v: src.vision_plus_market_data || 0, color: '#1FC98B' },
+        { label: 'Vision seule', v: src.vision_only || 0, color: '#F5A623' }]);
+
+      document.getElementById('conf-grid').innerHTML =
+        kpi('Global', d.avg_confidence_30d == null ? '—' : d.avg_confidence_30d + '%') +
+        kpi('Swing', d.avg_confidence_swing == null ? '—' : d.avg_confidence_swing + '%') +
+        kpi('Scalp', d.avg_confidence_scalp == null ? '—' : d.avg_confidence_scalp + '%');
+
+      // plans
+      const plans = d.plan_distribution || {};
+      document.getElementById('plan-tbl').innerHTML =
+        '<tr><th>Palier</th><th>Membres</th></tr>' +
+        (Object.keys(plans).length
+          ? Object.entries(plans).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')
+          : '<tr><td colspan="2" class="muted">—</td></tr>');
+
+      // top symbols
+      document.getElementById('sym-tbl').innerHTML =
+        '<tr><th>Symbole</th><th>Scans</th></tr>' +
+        ((d.top_symbols || []).map(x => `<tr><td>${esc(x.symbol)}</td><td>${x.count}</td></tr>`).join('')
+          || '<tr><td colspan="2" class="muted">—</td></tr>');
+
+      // frequent setups
+      document.getElementById('setup-tbl').innerHTML =
+        '<tr><th>Symbole</th><th>Mode</th><th>Dir</th><th>Conf.</th><th>N</th></tr>' +
+        ((d.frequent_setups || []).map(x =>
+          `<tr><td>${esc(x.symbol)}</td><td><span class="pill ${x.mode}">${esc(x.mode)}</span></td>
+           <td class="${x.direction}">${esc((x.direction || '').toUpperCase())}</td>
+           <td>${x.confidence_bucket}–${x.confidence_bucket + 9}</td><td>${x.count}</td></tr>`).join('')
+          || '<tr><td colspan="5" class="muted">Pas encore assez de scans</td></tr>');
+
+      // live users
+      document.getElementById('live-tbl').innerHTML =
+        '<tr><th>Membre Whop</th><th>Visiteur</th><th>IP</th><th>Pays</th><th>Vues</th><th>Vu il y a</th></tr>' +
+        ((d.live_users || []).map(u =>
+          `<tr><td>${esc(shortId(u.whop_user_id))}</td><td class="muted">${esc(shortId(u.visitor_id))}</td>
+           <td>${esc(u.ip || '—')}</td><td>${esc(u.country || '—')}</td><td>${n(u.page_views)}</td><td>${ago(u.last_seen)}</td></tr>`).join('')
+          || '<tr><td colspan="6" class="muted">Personne connecté en ce moment</td></tr>');
+
+      // recent scans
+      document.getElementById('scan-tbl').innerHTML =
+        '<tr><th>Heure</th><th>Membre</th><th>Symbole</th><th>Mode</th><th>Signal</th><th>Conf.</th><th>P1</th><th>Source</th><th>Latence</th></tr>' +
+        ((d.recent_scans || []).map(s =>
+          `<tr><td>${new Date(s.created_at).toLocaleString('fr-CA', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })}</td>
+           <td>${esc(shortId(s.whop_user_id))}</td>
+           <td>${esc(s.symbol_guess || s.symbol_override || '—')}</td>
+           <td><span class="pill ${s.mode}">${esc(s.mode || '')}</span></td>
+           <td class="${s.direction}">${esc((s.direction || '').toUpperCase())}</td>
+           <td>${s.confidence == null ? '—' : s.confidence + '%'}</td>
+           <td class="muted">${s.pass1_direction ? esc(s.pass1_direction[0].toUpperCase()) + (s.pass1_confidence ?? '') : '—'}</td>
+           <td class="muted">${s.data_source === 'vision_plus_market_data' ? 'réelle' : 'vision'}</td>
+           <td class="muted">${s.latency_ms == null ? '—' : (s.latency_ms / 1000).toFixed(1) + 's'}</td></tr>`).join('')
+          || '<tr><td colspan="9" class="muted">—</td></tr>');
+
+      // errors
+      document.getElementById('errs-tbl').innerHTML =
+        '<tr><th>Heure</th><th>Membre</th><th>IP</th><th>Erreur</th></tr>' +
+        ((d.recent_errors || []).map(e =>
+          `<tr><td>${new Date(e.created_at).toLocaleString('fr-CA', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })}</td>
+           <td>${esc(shortId(e.whop_user_id))}</td><td>${esc(e.ip || '—')}</td>
+           <td class="sell">${esc((e.meta && (e.meta.message || e.meta.name)) || '—')}</td></tr>`).join('')
+          || '<tr><td colspan="4" class="muted">Aucune erreur récente 🎉</td></tr>');
+
+      loadOrders();
+    }
+
+    // ── Boot ───────────────────────────────────────────────
+    (async function boot() {
+      if (!token()) return; // show gate
+      try { const d = await fetchStats(); enterApp(); render(d); }
+      catch (e) { localStorage.removeItem(TOKEN_KEY); return; }
+      timer = setInterval(load, 30000);
+    })();
+  </script>
+</body>
+</html>

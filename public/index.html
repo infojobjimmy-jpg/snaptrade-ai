@@ -766,7 +766,7 @@
           <option value="ctrader-demo">cTrader — Démo</option>
           <option value="snaptrade-paper">SnapTrade Paper</option>
         </select>
-        <div class="platform-note">Le résultat pourra être préparé puis accepté ou refusé après le scan. Aucun ordre réel n'est envoyé.</div>
+        <div class="platform-note">« MetaTrader 5 — Démo » place l'ordre sur ton compte démo connecté via le pont SnapTradeBridge. Les autres options restent une simulation interne. Révise chaque niveau avant d'accepter.</div>
       </div>
 
       <button id="analyze-btn" disabled>
@@ -871,7 +871,7 @@
             <div class="order-review-item"><div class="order-review-label">TP1</div><div class="order-review-value" id="review-tp1">—</div></div>
             <div class="order-review-item"><div class="order-review-label">TP2</div><div class="order-review-value" id="review-tp2">—</div></div>
           </div>
-          <div class="order-review-warning">Vérifie chaque niveau. « Accepter » crée uniquement un ordre simulé; « Refuser » ne fait rien.</div>
+          <div class="order-review-warning">Vérifie chaque niveau. Sur « MetaTrader 5 — Démo », « Accepter » envoie l'ordre à ton terminal MT5 (compte démo) : entrée, SL, puis break-even à TP1 et trailing gérés automatiquement. « Refuser » ne fait rien.</div>
           <div class="order-buttons" id="order-buttons">
             <button class="order-action-btn accept-order-btn" id="accept-order-btn">Accepter en démo</button>
             <button class="order-action-btn refuse-order-btn" id="refuse-order-btn">Refuser</button>
@@ -1157,10 +1157,10 @@
       dataBadge.className  = 'data-badge ' + (isRealData ? 'real' : 'vision');
       dataBadgeTxt.textContent = isRealData
         ? 'Basé sur données réelles ✓'
-        : 'Lecture visuelle seulement';
+        : 'MODE DÉMONSTRATION — Données indisponibles';
       dataBadge.title = isRealData
         ? ''
-        : 'Le symbole n\'a pas pu être confirmé avec des données de marché live. Les niveaux sont estimés visuellement.';
+        : 'MODE DÉMONSTRATION : données de marché live indisponibles. Les niveaux sont estimés visuellement à titre pédagogique uniquement.';
 
       // Indicators panel
       const indWrap = document.getElementById('indicators-wrap');
@@ -1282,22 +1282,72 @@
       orderStatusEl.textContent = 'Ordre refusé — rien n’a été envoyé ni créé.';
     });
 
+    // Ajoute l'option compte RÉEL seulement si un token admin est présent
+    (function maybeAddLiveOption() {
+      if (localStorage.getItem('st_admin_token') &&
+          ![...platformSelectEl.options].some(o => o.value === 'mt5-live')) {
+        const opt = document.createElement('option');
+        opt.value = 'mt5-live';
+        opt.textContent = 'MetaTrader 5 — RÉEL (admin)';
+        platformSelectEl.appendChild(opt);
+      }
+    })();
+
+    async function pollOrderStatus(ref) {
+      let tries = 0;
+      const tick = async () => {
+        tries++;
+        try {
+          const r = await fetch(`/api/orders/${encodeURIComponent(ref)}`);
+          if (r.ok) {
+            const o = await r.json();
+            if (o.status === 'filled') {
+              orderStatusEl.className = 'order-status success';
+              orderStatusEl.textContent = `Exécuté ✓ ${o.symbol} ${String(o.direction).toUpperCase()}`
+                + (o.mt5_ticket ? ` · ticket #${o.mt5_ticket}` : '')
+                + (o.fill_price ? ` @ ${o.fill_price}` : '');
+              return;
+            }
+            if (['rejected', 'expired', 'cancelled'].includes(o.status)) {
+              orderStatusEl.className = 'order-status error';
+              orderStatusEl.textContent = `Ordre ${o.status} — ${o.bridge_msg || 'voir le terminal MT5'}`;
+              return;
+            }
+            if (o.status === 'closed') {
+              const win = Number(o.pnl || 0) >= 0;
+              orderStatusEl.className = 'order-status ' + (win ? 'success' : 'error');
+              orderStatusEl.textContent = `Position fermée · P&L ${Number(o.pnl || 0).toFixed(2)}`;
+              return;
+            }
+          }
+        } catch (_) {}
+        if (tries < 20) setTimeout(tick, 3000);
+        else orderStatusEl.textContent = `Ordre ${ref} : toujours en attente du pont MT5. Vérifie que l’EA SnapTradeBridge tourne.`;
+      };
+      setTimeout(tick, 2500);
+    }
+
     acceptOrderBtn.addEventListener('click', async () => {
       if (!hasCompletePaperOrder()) return;
       acceptOrderBtn.disabled = true;
       refuseOrderBtn.disabled = true;
-      acceptOrderBtn.textContent = 'Placement démo…';
+      acceptOrderBtn.textContent = 'Envoi…';
       orderStatusEl.className = 'order-status';
       orderStatusEl.textContent = '';
 
       const symbol = currentSignal.symbol_guess || document.getElementById('symbol-input').value.trim().toUpperCase();
+      const platform = platformSelectEl.value;
+      const headers = { 'Content-Type': 'application/json' };
+      const adminTok = localStorage.getItem('st_admin_token');
+      if (platform === 'mt5-live' && adminTok) headers['x-admin-token'] = adminTok;
+
       try {
-        const response = await fetch('/api/paper-orders', {
+        const response = await fetch('/api/orders', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({
             whop_user_id: whopIdEl.value.trim(),
-            platform: platformSelectEl.value,
+            platform,
             symbol,
             direction: currentSignal.direction,
             entry: currentSignal.entry,
@@ -1305,20 +1355,28 @@
             tp2: currentSignal.tp2,
             sl: currentSignal.sl,
             lot_size: currentSignal.lot_size,
+            atr: currentSignal.indicators && currentSignal.indicators.atr,
+            mode: currentSignal.mode,
           }),
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Impossible de créer l’ordre démo.');
+        if (!response.ok) throw new Error(data.error || 'Impossible de créer l’ordre.');
 
         orderButtonsEl.style.display = 'none';
-        orderStatusEl.className = 'order-status success';
-        orderStatusEl.textContent = `Ordre placé en démo ✓ Référence ${data.order.id}. Aucun ordre réel envoyé.`;
+        if (data.routed_to_bridge) {
+          orderStatusEl.className = 'order-status';
+          orderStatusEl.textContent = `Ordre ${data.ref} envoyé au pont MT5 — en attente d’exécution…`;
+          pollOrderStatus(data.ref);
+        } else {
+          orderStatusEl.className = 'order-status success';
+          orderStatusEl.textContent = `Ordre ${data.ref} simulé ✓ (aucun terminal impliqué).`;
+        }
       } catch (err) {
         acceptOrderBtn.disabled = false;
         refuseOrderBtn.disabled = false;
-        acceptOrderBtn.textContent = 'Réessayer en démo';
+        acceptOrderBtn.textContent = 'Réessayer';
         orderStatusEl.className = 'order-status error';
-        orderStatusEl.textContent = err.message || 'Erreur pendant la création de l’ordre démo.';
+        orderStatusEl.textContent = err.message || 'Erreur pendant la création de l’ordre.';
       }
     });
 
@@ -1362,6 +1420,44 @@
         quotaBadgeEl.style.display = msg ? 'block' : 'none';
       } catch {}
     }
+
+    // ── Télémétrie : vue de page + heartbeat de présence ────
+    (function telemetry() {
+      let vid = localStorage.getItem('st_visitor_id');
+      if (!vid) {
+        vid = (crypto.randomUUID ? crypto.randomUUID()
+                                 : Date.now().toString(36) + Math.random().toString(16).slice(2));
+        localStorage.setItem('st_visitor_id', vid);
+      }
+      function send(type) {
+        const payload = {
+          visitor_id: vid,
+          type,
+          whop_user_id: (localStorage.getItem('st_whop_user_id') || '').trim() || undefined,
+          path: location.pathname,
+        };
+        const body = JSON.stringify(payload);
+        try {
+          if (type === 'page_view' && navigator.sendBeacon) {
+            navigator.sendBeacon('/api/track', new Blob([body], { type: 'application/json' }));
+          } else {
+            fetch('/api/track', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body,
+              keepalive: true,
+            }).catch(() => {});
+          }
+        } catch (_) {}
+      }
+      send('page_view');
+      setInterval(() => {
+        if (document.visibilityState === 'visible') send('heartbeat');
+      }, 60000);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') send('heartbeat');
+      });
+    })();
   </script>
 </body>
 </html>
