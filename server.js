@@ -387,6 +387,117 @@ function calculateIndicators(candles) {
   };
 }
 
+// ══════════════════════════════════════════════════════════════
+//  SUIVI DES RÉSULTATS DE SIGNAUX (Phase 3 — additif)
+//  Vérifie périodiquement si TP1/TP2/SL a été touché depuis chaque
+//  scan, en rejouant les bougies réelles depuis created_at (pas
+//  juste le prix actuel — capture les hits intra-période aussi).
+// ══════════════════════════════════════════════════════════════
+const OUTCOME_MIN_AGE_MS   = 60 * 60 * 1000;       // laisse au moins 1h avant de vérifier
+const OUTCOME_EXPIRY_MS    = 7 * 24 * 60 * 60 * 1000; // abandonne après 7 jours sans résultat
+const OUTCOME_CHECK_MS     = 60 * 60 * 1000;       // vérifie toutes les heures
+
+function resolveOutcomeSymbol(scan) {
+  const raw = ((scan.symbol_override || scan.symbol_guess) ?? '').toString().toUpperCase().replace(/\s+/g, '');
+  if (!raw) return null;
+  const yahooTicker = YAHOO_COMMODITY_MAP[raw];
+  if (yahooTicker) return { kind: 'yahoo', ticker: yahooTicker, interval: modeToYahooInterval(scan.mode) };
+  const normalized = normalizeSymbol(raw);
+  if (!normalized) return null;
+  return { kind: 'twelvedata', ticker: normalized, interval: modeToInterval(scan.mode) };
+}
+
+async function fetchCandlesSince(resolved, sinceISO) {
+  const data = resolved.kind === 'yahoo'
+    ? await fetchYahooFinance(resolved.ticker, resolved.interval)
+    : await fetchMarketData(resolved.ticker, resolved.interval);
+  if (!data) return null;
+  const since = new Date(sinceISO).getTime();
+  return data.candles.filter(c => new Date(c.dt).getTime() >= since);
+}
+
+// Rejoue les bougies dans l'ordre chronologique et retourne le PREMIER
+// niveau touché (SL prioritaire si touché la même bougie qu'un TP —
+// hypothèse prudente, ne surestime jamais la performance).
+function determineOutcome(scan, candles) {
+  const { direction, entry, sl, tp1, tp2 } = scan;
+  if (!direction || entry == null || sl == null) return null;
+  const isBuy = direction.toUpperCase() === 'BUY';
+
+  for (const c of candles) {
+    const slHit  = isBuy ? c.low  <= sl  : c.high >= sl;
+    const tp2Hit = tp2 != null && (isBuy ? c.high >= tp2 : c.low <= tp2);
+    const tp1Hit = tp1 != null && (isBuy ? c.high >= tp1 : c.low <= tp1);
+
+    if (slHit) return { outcome: 'sl', hit_price: sl, hit_at: c.dt };
+    if (tp2Hit) return { outcome: 'tp2', hit_price: tp2, hit_at: c.dt };
+    if (tp1Hit) return { outcome: 'tp1', hit_price: tp1, hit_at: c.dt };
+  }
+  return null; // rien touché encore dans cette fenêtre
+}
+
+async function checkPendingOutcomes() {
+  if (!supabase) return;
+  try {
+    const cutoffFresh  = new Date(Date.now() - OUTCOME_MIN_AGE_MS).toISOString();
+    const cutoffExpiry = new Date(Date.now() - OUTCOME_EXPIRY_MS).toISOString();
+
+    const { data: scans, error } = await supabase
+      .from('scans')
+      .select('id, symbol_guess, symbol_override, direction, entry, sl, tp1, tp2, mode, created_at, signal_outcomes(outcome, checked_count)')
+      .not('entry', 'is', null)
+      .not('sl', 'is', null)
+      .lte('created_at', cutoffFresh)
+      .limit(50);
+
+    if (error) { console.error('[outcomes] fetch scans error:', error.message); return; }
+    if (!scans?.length) return;
+
+    let checked = 0, resolved = 0;
+    for (const scan of scans) {
+      const existing = Array.isArray(scan.signal_outcomes) ? scan.signal_outcomes[0] : scan.signal_outcomes;
+      if (existing && existing.outcome !== 'pending') continue; // déjà résolu
+
+      if (scan.created_at <= cutoffExpiry) {
+        await supabase.from('signal_outcomes').upsert({
+          scan_id: scan.id, outcome: 'expired',
+          checked_count: (existing?.checked_count || 0) + 1, last_checked_at: new Date().toISOString(),
+        }, { onConflict: 'scan_id' });
+        continue;
+      }
+
+      const resolvedSym = resolveOutcomeSymbol(scan);
+      if (!resolvedSym) continue;
+
+      checked++;
+      try {
+        const candles = await fetchCandlesSince(resolvedSym, scan.created_at);
+        if (!candles?.length) continue;
+
+        const result = determineOutcome(scan, candles);
+        const hoursAfter = result ? (new Date(result.hit_at) - new Date(scan.created_at)) / 3600000 : null;
+
+        await supabase.from('signal_outcomes').upsert({
+          scan_id: scan.id,
+          outcome: result ? result.outcome : 'pending',
+          hit_price: result ? result.hit_price : null,
+          hit_at: result ? result.hit_at : null,
+          hours_after: hoursAfter,
+          checked_count: (existing?.checked_count || 0) + 1,
+          last_checked_at: new Date().toISOString(),
+        }, { onConflict: 'scan_id' });
+
+        if (result) resolved++;
+      } catch (e) {
+        console.warn(`[outcomes] check failed for scan ${scan.id}:`, e.message);
+      }
+    }
+    if (checked > 0) console.log(`[outcomes] Vérifié ${checked} signaux, ${resolved} résolus cette passe.`);
+  } catch (e) {
+    console.error('[outcomes] checkPendingOutcomes exception:', e.message);
+  }
+}
+
 function buildMarketDataText(symbol, interval, ind, firstDirection) {
   const fmt = v => (v != null ? v : 'N/A');
   return [
@@ -1209,6 +1320,15 @@ app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
     console.error('[admin] stats error:', error.message);
     return res.status(500).json({ error: error.message });
   }
+  // Additif — performance réelle des signaux (Phase 3). Echec non bloquant :
+  // le reste du dashboard doit toujours s'afficher meme si cette table
+  // n'existe pas encore (avant que la migration soit appliquee).
+  try {
+    const { data: outcomeData, error: outcomeErr } = await supabase.rpc('outcome_stats');
+    data.outcome_stats = outcomeErr ? null : (outcomeData?.[0] || null);
+  } catch (e) {
+    data.outcome_stats = null;
+  }
   res.set('Cache-Control', 'no-store');
   return res.json(data);
 });
@@ -1235,3 +1355,9 @@ const server = app.listen(PORT, () => {
 server.timeout          = 120000;
 server.keepAliveTimeout = 120000;
 server.headersTimeout   = 125000;
+
+// Suivi des résultats de signaux : première passe 2 min après démarrage
+// (laisse le serveur se stabiliser), puis chaque heure. setInterval simple
+// suffit ici (charge légère, pas besoin de node-cron) — voir checkPendingOutcomes.
+setTimeout(() => checkPendingOutcomes(), 2 * 60 * 1000);
+setInterval(() => checkPendingOutcomes(), OUTCOME_CHECK_MS);
