@@ -31,12 +31,14 @@ input int     PollSeconds       = 3;
 //--- Risque / exécution ------------------------------------------
 input double  RiskPercent       = 1.0;             // 0 = utiliser le lot envoyé par l'app
 input double  FixedLotFallback  = 0.01;
-input int     MaxSpreadPoints   = 40;
-input int     SlippagePoints    = 20;
+input double  MaxSpreadR        = 0.5;             // spread max autorisé = 0.5 x (entry-SL)  (auto-échelle forex/or/crypto/indices)
+input int     MaxSpreadPointsHard = 8000;          // garde-fou absolu (points) contre un spread anormal
+input int     SlippagePoints    = 40;
 input int     MagicNumber       = 770077;
 input string  SymbolSuffix      = "";              // ex: ".r" si ton courtier nomme XAUUSD.r
 input string  SymbolOverride    = "";              // force un symbole unique (sinon celui du signal)
-input double  EntryToleranceR   = 0.25;            // marché si prix à < 0.25 x (entry-SL), sinon ordre limite
+input bool    AllowPendingEntry = false;           // false = toujours au marché (recommandé) ; true = ordre limite/stop si le prix est loin de l'entrée
+input double  EntryToleranceR   = 0.25;            // (si AllowPendingEntry) marché si prix à < 0.25 x (entry-SL)
 input int     PendingExpiryMin  = 60;
 
 //--- Gestion de position ---------------------------------------
@@ -201,15 +203,23 @@ string BrokerSymbol(const string sig)
 {
    if(SymbolOverride != "") return(SymbolOverride);
    string s = sig;
-   if(SymbolSelect(s, true))                          return(s);
-   if(SymbolSuffix != "" && SymbolSelect(s + SymbolSuffix, true)) return(s + SymbolSuffix);
-   // gold seulement : XAUUSD ↔ GOLD selon le courtier
-   if((s == "XAUUSD" || s == "GOLD"))
-   {
-      if(SymbolSelect("XAUUSD", true)) return("XAUUSD");
-      if(SymbolSelect("GOLD", true))   return("GOLD");
-   }
-   return(s); // laissera OrderSend échouer proprement si introuvable
+   StringToUpper(s);
+   if(SymbolSelect(s, true)) return(s);
+
+   // enlève les séparateurs : "BTC/USD" -> "BTCUSD", "XAU/USD" -> "XAUUSD"
+   string bare = s;
+   StringReplace(bare, "/", ""); StringReplace(bare, "-", "");
+   StringReplace(bare, ".", ""); StringReplace(bare, " ", "");
+   if(bare != s && SymbolSelect(bare, true)) return(bare);
+   if(SymbolSuffix != "" && SymbolSelect(bare + SymbolSuffix, true)) return(bare + SymbolSuffix);
+
+   // alias or / bitcoin selon le courtier
+   if(bare == "XAUUSD" || bare == "GOLD")
+   { if(SymbolSelect("XAUUSD", true)) return("XAUUSD"); if(SymbolSelect("GOLD", true)) return("GOLD"); }
+   if(bare == "BTCUSD" || bare == "BITCOIN")
+   { if(SymbolSelect("BTCUSD", true)) return("BTCUSD"); if(SymbolSelect("BTCUSD.", true)) return("BTCUSD."); }
+
+   return(bare); // laissera un rejet propre si introuvable
 }
 
 double CalcLot(const string sym, double entry, double sl, double appLot)
@@ -329,33 +339,61 @@ void ProcessOrder(const string o)
    string sym = BrokerSymbol(sig);
    if(!SymbolSelect(sym, true))           { Report(ref, "rejected", 0, 0, 0, "Symbole introuvable: " + sig); return; }
 
-   long spread = SymbolInfoInteger(sym, SYMBOL_SPREAD);
-   if(spread > MaxSpreadPoints)           { Report(ref, "rejected", 0, 0, 0, StringFormat("Spread %d > max %d", (int)spread, MaxSpreadPoints)); return; }
-
    int d = (dir == "buy") ? 1 : -1;
+   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
    double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
    double bid = SymbolInfoDouble(sym, SYMBOL_BID);
    double px  = (d > 0) ? ask : bid;
    double R   = MathAbs(entry - sl);
-   double lot = CalcLot(sym, entry, sl, appLot);
-   double hardTP = tp2 > 0 ? tp2 : 0;
+   double spreadPrice = ask - bid;
 
+   // Spread : relatif au stop (auto-échelle) + garde-fou absolu
+   if(point > 0 && spreadPrice / point > MaxSpreadPointsHard)
+   { Report(ref, "rejected", 0, 0, 0, StringFormat("Spread anormal %.0f pts", spreadPrice / point)); return; }
+   if(R > 0 && spreadPrice > MaxSpreadR * R)
+   { Report(ref, "rejected", 0, 0, 0, StringFormat("Spread %.5f trop large vs le stop %.5f", spreadPrice, R)); return; }
+
+   // Distance minimale imposée par le courtier pour SL/TP
+   int    stopsLvl = (int)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist  = (stopsLvl + 2) * point;
+
+   double useSL = sl;
+   double useTP = (tp2 > 0) ? tp2 : 0;
+
+   if(d > 0) // BUY : SL sous le bid, TP au-dessus de l'ask
+   {
+      if(useSL >= bid - minDist)
+      { Report(ref, "rejected", 0, 0, 0, "SL du signal au-dessus/trop proche du prix actuel (signal périmé ?)"); return; }
+      if(useTP > 0 && useTP <= ask + minDist) useTP = 0; // TP inatteignable -> pas de TP dur, le trailing gère
+   }
+   else      // SELL : SL au-dessus de l'ask, TP sous le bid
+   {
+      if(useSL <= ask + minDist)
+      { Report(ref, "rejected", 0, 0, 0, "SL du signal en-dessous/trop proche du prix actuel (signal périmé ?)"); return; }
+      if(useTP > 0 && useTP >= bid - minDist) useTP = 0;
+   }
+
+   double lot = CalcLot(sym, px, useSL, appLot);
    trade.SetTypeFillingBySymbol(sym);
-   bool market = MathAbs(px - entry) <= EntryToleranceR * R;
+
+   bool nearEntry = (R > 0 && MathAbs(px - entry) <= EntryToleranceR * R);
+   bool doMarket  = (!AllowPendingEntry) || nearEntry;
    bool ok = false;
 
-   if(market)
+   if(doMarket)
    {
-      ok = (d > 0) ? trade.Buy(lot, sym, 0.0, sl, hardTP, ref)
-                   : trade.Sell(lot, sym, 0.0, sl, hardTP, ref);
+      ok = (d > 0) ? trade.Buy(lot, sym, 0.0, useSL, useTP, ref)
+                   : trade.Sell(lot, sym, 0.0, useSL, useTP, ref);
    }
    else
    {
       datetime exp = TimeCurrent() + PendingExpiryMin * 60;
       if(d > 0)
-         ok = trade.BuyLimit(lot, entry, sym, sl, hardTP, ORDER_TIME_SPECIFIED, exp, ref);
+         ok = (entry < ask) ? trade.BuyLimit(lot, entry, sym, useSL, useTP, ORDER_TIME_SPECIFIED, exp, ref)
+                            : trade.BuyStop (lot, entry, sym, useSL, useTP, ORDER_TIME_SPECIFIED, exp, ref);
       else
-         ok = trade.SellLimit(lot, entry, sym, sl, hardTP, ORDER_TIME_SPECIFIED, exp, ref);
+         ok = (entry > bid) ? trade.SellLimit(lot, entry, sym, useSL, useTP, ORDER_TIME_SPECIFIED, exp, ref)
+                            : trade.SellStop (lot, entry, sym, useSL, useTP, ORDER_TIME_SPECIFIED, exp, ref);
    }
 
    if(!ok)
@@ -364,7 +402,7 @@ void ProcessOrder(const string o)
       return;
    }
 
-   if(market)
+   if(doMarket)
    {
       // position id : via le deal résultant, sinon par le commentaire
       ulong posTicket = 0;
@@ -384,8 +422,8 @@ void ProcessOrder(const string o)
    }
    else
    {
-      Report(ref, "filled", trade.ResultOrder(), entry, 0, "Ordre limite posé");
-      Track(ref, 0, d, entry, sl, tp1, tp2, atr); // ticket lié quand la limite se remplit
+      Report(ref, "filled", trade.ResultOrder(), entry, 0, "Ordre en attente posé");
+      Track(ref, 0, d, entry, sl, tp1, tp2, atr); // ticket lié quand l'ordre se remplit
    }
 }
 
